@@ -4,7 +4,7 @@
 # GNU General Public License version 2.
 
 import re
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from .gh_submit import Repository
 
@@ -16,6 +16,7 @@ def create_pull_request_title_and_body(
     pr_numbers_and_num_commits: List[Tuple[int, int]],
     pr_numbers_index: int,
     repository: Repository,
+    title: Optional[str] = None,
     reviewstack: bool = True,
 ) -> Tuple[str, str]:
     r"""Returns (title, body) for the pull request.
@@ -63,14 +64,15 @@ def create_pull_request_title_and_body(
     """
     owner, name = repository.get_upstream_owner_and_name()
     pr = pr_numbers_and_num_commits[pr_numbers_index][0]
-    title = firstline(commit_msg)
-    body = commit_msg
+    title = title if title is not None else firstline(commit_msg)
+    body = strip_stack_information(commit_msg)
     extra = []
     if len(pr_numbers_and_num_commits) > 1:
+        review_stack_message = "Stack created with [Sapling](https://sapling-scm.com)."
         if reviewstack:
             reviewstack_url = f"https://reviewstack.dev/{owner}/{name}/pull/{pr}"
-            review_stack_message = f"Stack created with [Sapling](https://sapling-scm.com). Best reviewed with [ReviewStack]({reviewstack_url})."
-            extra.append(review_stack_message)
+            review_stack_message += f" Best reviewed with [ReviewStack]({reviewstack_url})."
+        extra.append(review_stack_message)
         bulleted_list = "\n".join(
             _format_stack_entry(pr_number, index, pr_numbers_index, num_commits)
             for index, (pr_number, num_commits) in enumerate(pr_numbers_and_num_commits)
@@ -87,6 +89,14 @@ _STACK_ENTRY = re.compile(r"^\* (__->__ )?#([1-9]\d*).*$")
 # one with the "__->__" marker; otherwise, False.
 # The second value is the pull request number for this entry.
 _StackEntry = Tuple[bool, int]
+
+
+def strip_stack_information(body: str) -> str:
+    stack_info = parse_stack_information(body)
+    has_stack_info = any([entry[0] for entry in stack_info])
+    if has_stack_info:
+        body = body.rsplit(_HORIZONTAL_RULE, maxsplit=1)[0]
+    return body
 
 
 def parse_stack_information(body: str) -> List[_StackEntry]:
