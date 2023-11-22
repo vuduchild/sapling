@@ -22,7 +22,7 @@
   padding-bottom: 0px;
   border-radius: var(--halfpad);
   min-width: 700px;
-  max-width: 700px;
+  max-width: 2000px;
   flex-shrink: 0;
   height: 100%;
 }
