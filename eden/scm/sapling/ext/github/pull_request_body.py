@@ -67,10 +67,11 @@ def create_pull_request_title_and_body(
     body = commit_msg
     extra = []
     if len(pr_numbers_and_num_commits) > 1:
+        review_stack_message = "Stack created with [Sapling](https://sapling-scm.com)."
         if reviewstack:
             reviewstack_url = f"https://reviewstack.dev/{owner}/{name}/pull/{pr}"
-            review_stack_message = f"Stack created with [Sapling](https://sapling-scm.com). Best reviewed with [ReviewStack]({reviewstack_url})."
-            extra.append(review_stack_message)
+            review_stack_message += f" Best reviewed with [ReviewStack]({reviewstack_url})."
+        extra.append(review_stack_message)
         bulleted_list = "\n".join(
             _format_stack_entry(pr_number, index, pr_numbers_index, num_commits)
             for index, (pr_number, num_commits) in enumerate(pr_numbers_and_num_commits)
