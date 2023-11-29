@@ -9,6 +9,7 @@ from typing import List, Tuple
 from .gh_submit import Repository
 
 _HORIZONTAL_RULE = "---"
+_SAPLING_FOOTER_MARKER = "[//]: # (BEGIN SAPLING FOOTER)"
 
 
 def create_pull_request_title_and_body(
@@ -77,7 +78,7 @@ def create_pull_request_title_and_body(
         )
         extra.append(bulleted_list)
     if extra:
-        body = "\n".join([body, _HORIZONTAL_RULE] + extra)
+        body = "\n".join([body, _HORIZONTAL_RULE, _SAPLING_FOOTER_MARKER] + extra)
     return title, body
 
 
@@ -96,6 +97,7 @@ def parse_stack_information(body: str) -> List[_StackEntry]:
     ...     'The original commit message.\n' +
     ...     'Second line of message.\n' +
     ...     '---\n' +
+    ...     '[//]: # (BEGIN SAPLING FOOTER)\n' +
     ...     'Stack created with [Sapling](https://sapling-scm.com). ' +
     ...     f'Best reviewed with [ReviewStack]({reviewstack_url}).\n' +
     ...     '* #1\n' +
@@ -118,12 +120,19 @@ def parse_stack_information(body: str) -> List[_StackEntry]:
                 # This must be the end of the list.
                 break
         elif is_prev_line_hr:
-            if line.startswith("Stack created with [Sapling]"):
+            if _line_has_stack_list_marker(line):
                 in_stack_list = True
             is_prev_line_hr = False
         elif line.rstrip() == _HORIZONTAL_RULE:
             is_prev_line_hr = True
     return stack_entries
+
+
+def _line_has_stack_list_marker(line: str) -> bool:
+    # we're still looking at the "Stack created with [Sapling]" text for backward compatibility
+    return line == _SAPLING_FOOTER_MARKER or line.startswith(
+        "Stack created with [Sapling]"
+    )
 
 
 def _format_stack_entry(
