@@ -69,7 +69,6 @@ Set some env vars that will be used frequently
   $ cd repo
   $ hg -q co master
 
-
 # -------------------- Use the gitexport tool --------------------
 
 Set location of binary, resources and options (e.g. output path, directories)
@@ -80,8 +79,15 @@ Set location of binary, resources and options (e.g. output path, directories)
   $ START_DATE="2023-01-01"
   $ END_DATE="2023-02-01"
 
-Run the tool
+Test the unhappy path: what happens if we provide a bookmark that does not exist?
+We fail with a helpful error message.
+  $ gitexport -R "repo" -p $EXPORT_DIR --git-output $GIT_BUNDLE_OUTPUT -B i_made_this_up_would_you_believe_it
+  * Starting session with id * (glob)
+  * Execution error: Expected the repo to contain the bookmark: i_made_this_up_would_you_believe_it. It didn't (glob)
+  Error: Execution failed
+  [1]
 
+Run the tool
   $ test_gitexport --log-level ERROR $(printf -- '-p %s ' "${EXPORT_PATHS[@]}")
 
 

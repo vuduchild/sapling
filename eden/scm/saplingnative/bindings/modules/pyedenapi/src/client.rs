@@ -49,6 +49,7 @@ use edenapi_types::HgMutationEntryContent;
 use edenapi_types::HistoryEntry;
 use edenapi_types::Key;
 use edenapi_types::LandStackResponse;
+use edenapi_types::SetBookmarkResponse;
 use edenapi_types::SnapshotRawData;
 use edenapi_types::TreeAttributes;
 use edenapi_types::TreeEntry;
@@ -187,7 +188,7 @@ py_class!(pub class client |py| {
         to: Serde<Option<HgId>>,
         from: Serde<Option<HgId>>,
         pushvars: Vec<(String, String)> = Vec::new(),
-    ) -> PyResult<bool> {
+    ) -> PyResult<Serde<SetBookmarkResponse>> {
         self.inner(py).as_ref().set_bookmark_py(py, bookmark, to.0, from.0, pushvars)
     }
 

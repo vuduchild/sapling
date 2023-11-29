@@ -51,6 +51,7 @@ use edenapi_types::HistoryEntry;
 use edenapi_types::IndexableId;
 use edenapi_types::LandStackResponse;
 use edenapi_types::LookupResult;
+use edenapi_types::SetBookmarkResponse;
 use edenapi_types::TreeAttributes;
 use edenapi_types::TreeEntry;
 use edenapi_types::UploadHgChangeset;
@@ -211,18 +212,20 @@ pub trait EdenApiPyExt: EdenApi {
         to: Option<HgId>,
         from: Option<HgId>,
         pushvars: Vec<(String, String)>,
-    ) -> PyResult<bool> {
-        py.allow_threads(|| {
-            block_unless_interrupted(async move {
-                self.set_bookmark(bookmark, to, from, pushvars.into_iter().collect())
-                    .await?;
-                Ok::<(), EdenApiError>(())
+    ) -> PyResult<Serde<SetBookmarkResponse>> {
+        let response = py
+            .allow_threads(|| {
+                block_unless_interrupted(async move {
+                    let response = self
+                        .set_bookmark(bookmark, to, from, pushvars.into_iter().collect())
+                        .await?;
+                    Ok::<_, EdenApiError>(response)
+                })
             })
-        })
-        .map_pyerr(py)?
-        .map_pyerr(py)?;
+            .map_pyerr(py)?
+            .map_pyerr(py)?;
 
-        Ok(true)
+        Ok(Serde(response))
     }
 
     fn land_stack_py(

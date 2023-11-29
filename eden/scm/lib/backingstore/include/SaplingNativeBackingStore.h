@@ -14,7 +14,6 @@
 #include <optional>
 #include <string_view>
 
-#include "eden/scm/lib/backingstore/include/BackingStoreBindings.h"
 #include "eden/scm/lib/backingstore/src/ffi.rs.h" // @manual
 
 namespace folly {
@@ -22,11 +21,6 @@ class IOBuf;
 } // namespace folly
 
 namespace sapling {
-
-class SaplingFetchError : public std::runtime_error {
- public:
-  using std::runtime_error::runtime_error;
-};
 
 /**
  * Reference to a 20-byte hg node ID.
@@ -47,8 +41,8 @@ using NodeIdRange = folly::Range<const NodeId*>;
 using ManifestId = std::array<uint8_t, 20>;
 
 /**
- * Provides a type-safe layer and a more convenient API around the raw
- * BackingStoreBindings.h C functions.
+ * Provides a type-safe layer and a more convenient API around the ffi C/C++
+ * functions.
  *
  * Rather than individually documenting each method, the overall design is
  * described here:

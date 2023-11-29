@@ -892,6 +892,8 @@ def expushcmd(orig, ui, repo, dest=None, **opts):
         or (opts.get("force") and forcecompat),
     }
 
+    edenapi = pushmod.get_edenapi_for_dest(repo, dest)
+
     if opargs["delete"]:
         flag = None
         for f in ("to", "bookmark", "branch", "rev"):
@@ -904,6 +906,10 @@ def expushcmd(orig, ui, repo, dest=None, **opts):
         # we want to skip pushing any changesets while deleting a remote
         # bookmark, so we send the null revision
         opts["rev"] = ["null"]
+        if edenapi:
+            return pushmod.delete_remote_bookmark(
+                repo, edenapi, bookmark=opargs["delete"]
+            )
         return orig(ui, repo, dest, opargs=opargs, **opts)
 
     revs = opts.get("rev")
@@ -1006,11 +1012,6 @@ def expushcmd(orig, ui, repo, dest=None, **opts):
 
     # all checks pass, go for it!
     node = repo.lookup(rev)
-    ui.status_err(
-        _("pushing rev %s to destination %s bookmark %s\n")
-        % (short(node), dest, opargs["to"])
-    )
-
     force = opts.get("force")
     bookmark = opargs["to"]
     pattern = ui.config("remotenames", "disallowedto")
@@ -1029,10 +1030,15 @@ def expushcmd(orig, ui, repo, dest=None, **opts):
             repo.nodes("draft() & only(%n, %s)", node, fullonto)
         )
 
-    if ui.configbool("push", "edenapi"):
+    if edenapi:
         return pushmod.push(
             repo, dest, node, remote_bookmark=opargs["to"], opargs=opargs
         )
+
+    ui.status_err(
+        _("pushing rev %s to destination %s bookmark %s\n")
+        % (short(node), dest, opargs["to"])
+    )
 
     # NB: despite the name, 'revs' doesn't work if it's a numeric rev
     pushop = exchange.push(

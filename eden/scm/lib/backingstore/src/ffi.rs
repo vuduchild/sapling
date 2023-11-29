@@ -13,16 +13,10 @@ use std::os::raw::c_char;
 use anyhow::Error;
 use anyhow::Result;
 use cxx::SharedPtr;
-use libc::c_void;
 use storemodel::FileAuxData as ScmStoreFileAuxData;
 use types::Key;
 
 use crate::backingstore::BackingStore;
-use crate::cbytes::CBytes;
-use crate::cfallible::CFallible;
-use crate::cfallible::CFallibleBase;
-use crate::request::Request;
-use crate::slice::Slice;
 use crate::FetchMode;
 
 #[cxx::bridge(namespace = sapling)]
@@ -55,6 +49,10 @@ pub(crate) mod ffi {
         entries: Vec<TreeEntry>,
     }
 
+    pub struct Request {
+        node: *const u8,
+    }
+
     pub struct Blob {
         pub(crate) bytes: Vec<u8>,
     }
@@ -66,6 +64,35 @@ pub(crate) mod ffi {
         content_sha256: [u8; 32],
         has_blake3: bool,
         content_blake3: [u8; 32],
+    }
+
+    unsafe extern "C++" {
+        include!("eden/scm/lib/backingstore/include/ffi.h");
+
+        type GetTreeBatchResolver;
+        type GetBlobBatchResolver;
+        type GetFileAuxBatchResolver;
+
+        unsafe fn sapling_backingstore_get_tree_batch_handler(
+            resolve_state: SharedPtr<GetTreeBatchResolver>,
+            index: usize,
+            error: String,
+            tree: SharedPtr<Tree>,
+        );
+
+        unsafe fn sapling_backingstore_get_blob_batch_handler(
+            resolve_state: SharedPtr<GetBlobBatchResolver>,
+            index: usize,
+            error: String,
+            blob: Box<Blob>,
+        );
+
+        unsafe fn sapling_backingstore_get_file_aux_batch_handler(
+            resolve_state: SharedPtr<GetFileAuxBatchResolver>,
+            index: usize,
+            error: String,
+            blob: SharedPtr<FileAuxData>,
+        );
     }
 
     extern "Rust" {
@@ -87,17 +114,38 @@ pub(crate) mod ffi {
             local: bool,
         ) -> Result<SharedPtr<Tree>>;
 
+        pub fn sapling_backingstore_get_tree_batch(
+            store: &mut BackingStore,
+            requests: &[Request],
+            local: bool,
+            resolver: SharedPtr<GetTreeBatchResolver>,
+        );
+
         pub fn sapling_backingstore_get_blob(
             store: &mut BackingStore,
             node: &[u8],
             local: bool,
         ) -> Result<Box<Blob>>;
 
+        pub fn sapling_backingstore_get_blob_batch(
+            store: &mut BackingStore,
+            requests: &[Request],
+            local: bool,
+            resolver: SharedPtr<GetBlobBatchResolver>,
+        );
+
         pub fn sapling_backingstore_get_file_aux(
             store: &mut BackingStore,
             node: &[u8],
             local: bool,
         ) -> Result<SharedPtr<FileAuxData>>;
+
+        pub fn sapling_backingstore_get_file_aux_batch(
+            store: &mut BackingStore,
+            requests: &[Request],
+            local: bool,
+            resolver: SharedPtr<GetFileAuxBatchResolver>,
+        );
 
         pub fn sapling_backingstore_flush(store: &mut BackingStore);
     }
@@ -142,22 +190,23 @@ pub fn sapling_backingstore_get_tree(
     ))
 }
 
-#[no_mangle]
-pub extern "C" fn sapling_backingstore_get_tree_batch(
+pub fn sapling_backingstore_get_tree_batch(
     store: &mut BackingStore,
-    requests: Slice<Request>,
+    requests: &[ffi::Request],
     local: bool,
-    data: *mut c_void,
-    resolve: unsafe extern "C" fn(*mut c_void, usize, CFallibleBase),
+    resolver: SharedPtr<ffi::GetTreeBatchResolver>,
 ) {
-    let keys: Vec<Key> = requests.slice().iter().map(|req| req.key()).collect();
+    let keys: Vec<Key> = requests.iter().map(|req| req.key()).collect();
 
     store.get_tree_batch(keys, fetch_mode_from_local(local), |idx, result| {
         let result: Result<Box<dyn storemodel::TreeEntry>> =
             result.and_then(|opt| opt.ok_or_else(|| Error::msg("no tree found")));
-        let result: Result<ffi::Tree> = result.and_then(|list| list.try_into());
-        let result: CFallible<ffi::Tree> = result.into();
-        unsafe { resolve(data, idx, result.into()) };
+        let resolver = resolver.clone();
+        let (error, tree) = match result.and_then(|list| list.try_into()) {
+            Ok(tree) => (String::default(), SharedPtr::new(tree)),
+            Err(error) => (format!("{:?}", error), SharedPtr::null()),
+        };
+        unsafe { ffi::sapling_backingstore_get_tree_batch_handler(resolver, idx, error, tree) };
     });
 }
 
@@ -172,21 +221,24 @@ pub fn sapling_backingstore_get_blob(
     Ok(Box::new(ffi::Blob { bytes }))
 }
 
-#[no_mangle]
-pub extern "C" fn sapling_backingstore_get_blob_batch(
+pub fn sapling_backingstore_get_blob_batch(
     store: &mut BackingStore,
-    requests: Slice<Request>,
+    requests: &[ffi::Request],
     local: bool,
-    data: *mut c_void,
-    resolve: unsafe extern "C" fn(*mut c_void, usize, CFallibleBase),
+    resolver: SharedPtr<ffi::GetBlobBatchResolver>,
 ) {
-    let keys: Vec<Key> = requests.slice().iter().map(|req| req.key()).collect();
+    let keys: Vec<Key> = requests.iter().map(|req| req.key()).collect();
     store.get_blob_batch(keys, fetch_mode_from_local(local), |idx, result| {
-        let result: CFallible<CBytes> = result
-            .and_then(|opt| opt.ok_or_else(|| Error::msg("no blob found")))
-            .map(CBytes::from_vec)
-            .into();
-        unsafe { resolve(data, idx, result.into()) };
+        let result = result.and_then(|opt| opt.ok_or_else(|| Error::msg("no blob found")));
+        let resolver = resolver.clone();
+        let (error, blob) = match result {
+            Ok(blob) => (String::default(), Box::new(ffi::Blob { bytes: blob })),
+            Err(error) => (
+                format!("{:?}", error),
+                Box::new(ffi::Blob { bytes: vec![] }),
+            ),
+        };
+        unsafe { ffi::sapling_backingstore_get_blob_batch_handler(resolver, idx, error, blob) };
     });
 }
 
@@ -203,21 +255,23 @@ pub fn sapling_backingstore_get_file_aux(
     ))
 }
 
-#[no_mangle]
-pub extern "C" fn sapling_backingstore_get_file_aux_batch(
+pub fn sapling_backingstore_get_file_aux_batch(
     store: &mut BackingStore,
-    requests: Slice<Request>,
+    requests: &[ffi::Request],
     local: bool,
-    data: *mut c_void,
-    resolve: unsafe extern "C" fn(*mut c_void, usize, CFallibleBase),
+    resolver: SharedPtr<ffi::GetFileAuxBatchResolver>,
 ) {
-    let keys: Vec<Key> = requests.slice().iter().map(|req| req.key()).collect();
+    let keys: Vec<Key> = requests.iter().map(|req| req.key()).collect();
 
     store.get_file_aux_batch(keys, fetch_mode_from_local(local), |idx, result| {
         let result: Result<ScmStoreFileAuxData> =
             result.and_then(|opt| opt.ok_or_else(|| Error::msg("no file aux data found")));
-        let result: CFallible<ffi::FileAuxData> = result.map(|aux| aux.into()).into();
-        unsafe { resolve(data, idx, result.into()) };
+        let resolver = resolver.clone();
+        let (error, aux) = match result {
+            Ok(aux) => (String::default(), SharedPtr::new(aux.into())),
+            Err(error) => (format!("{:?}", error), SharedPtr::null()),
+        };
+        unsafe { ffi::sapling_backingstore_get_file_aux_batch_handler(resolver, idx, error, aux) };
     });
 }
 

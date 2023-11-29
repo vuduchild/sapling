@@ -73,6 +73,7 @@ use edenapi_types::LookupResult;
 use edenapi_types::PushVar;
 use edenapi_types::ServerError;
 use edenapi_types::SetBookmarkRequest;
+use edenapi_types::SetBookmarkResponse;
 use edenapi_types::ToApi;
 use edenapi_types::ToWire;
 use edenapi_types::TreeAttributes;
@@ -788,7 +789,7 @@ impl EdenApi for Client {
     }
 
     async fn bookmarks(&self, bookmarks: Vec<String>) -> Result<Vec<BookmarkEntry>, EdenApiError> {
-        tracing::info!("Requesting '{}' bookmarks", bookmarks.len());
+        tracing::info!("Requesting {} bookmarks", bookmarks.len());
         let url = self.build_url(paths::BOOKMARKS)?;
         let bookmark_req = BookmarkRequest { bookmarks };
         self.log_request(&bookmark_req, "bookmarks");
@@ -806,7 +807,7 @@ impl EdenApi for Client {
         to: Option<HgId>,
         from: Option<HgId>,
         pushvars: HashMap<String, String>,
-    ) -> Result<(), EdenApiError> {
+    ) -> Result<SetBookmarkResponse, EdenApiError> {
         tracing::info!("Set bookmark '{}' from {:?} to {:?}", &bookmark, from, to);
         let url = self.build_url(paths::SET_BOOKMARK)?;
         let set_bookmark_req = SetBookmarkRequest {
@@ -824,7 +825,7 @@ impl EdenApi for Client {
             .cbor(&set_bookmark_req.to_wire())
             .map_err(EdenApiError::RequestSerializationFailed)?;
 
-        self.fetch_single::<()>(req).await
+        self.fetch_single::<SetBookmarkResponse>(req).await
     }
 
     /// Land a stack of commits, rebasing them onto the specified bookmark

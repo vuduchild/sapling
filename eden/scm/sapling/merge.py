@@ -22,6 +22,7 @@ from bindings import (
     checkout as nativecheckout,
     status as nativestatus,
     worker as rustworker,
+    workingcopy as rustworkingcopy,
 )
 from sapling import tracing
 
@@ -40,44 +41,19 @@ from . import (
     progress,
     pycompat,
     scmutil,
-    treestate,
     util,
     worker,
 )
 from .i18n import _
 from .node import addednodeid, bin, hex, nullhex, nullid, wdirhex
-from .pycompat import decodeutf8, encodeutf8
-
-_pack = struct.pack
-_unpack = struct.unpack
+from .pycompat import encodeutf8
 
 
 class mergestate:
     """track 3-way merge state of individual files
 
-    The merge state is stored on disk when needed. For more about the format,
-    see the documentation for `_readrecords`.
-
-    Each record can contain arbitrary content, and has an associated type. This
-    `type` should be a letter. If `type` is uppercase, the record is mandatory:
-    versions of Mercurial that don't support it should abort. If `type` is
-    lowercase, the record can be safely ignored.
-
-    Currently known records:
-
-    L: the node of the "local" part of the merge (hexified version)
-    O: the node of the "other" part of the merge (hexified version)
-    F: a file to be merged entry
-    C: a change/delete or delete/change conflict
-    D: a file that the external merge driver will merge internally
-       (experimental)
-    P: a path conflict (file vs directory)
-    m: the external merge driver defined for this merge plus its run state
-       (experimental)
-    f: a (filename, dictionary) tuple of optional values for a given file
-    X: unsupported mandatory record type (used in tests)
-    x: unsupported advisory record type (used in tests)
-    l: the labels for the parts of the merge.
+    The merge state is stored on disk when needed. See the
+    repostate::merge_state module for details on the format.
 
     Merge driver run states (experimental):
     u: driver-resolved files unmarked -- needs to be run next time we're about
@@ -111,7 +87,7 @@ class mergestate:
     def read(repo):
         """Initialize the merge state, reading it from disk."""
         ms = mergestate(repo)
-        ms._read()
+        ms._read(repo._rsrepo.workingcopy().mergestate())
         return ms
 
     def __init__(self, repo):
@@ -120,42 +96,32 @@ class mergestate:
         Do not use this directly! Instead call read() or clean()."""
         self._repo = repo
         self._dirty = False
-        self._labels = None
 
     def reset(self, node=None, other=None, labels=None, ancestors=None):
-        self._state = {}
-        self._stateextras = {}
-        self._local = None
-        self._other = None
-        self._ancestors = None
-        self._labels = labels
-        for var in ("localctx", "otherctx"):
-            if var in vars(self):
-                delattr(self, var)
-        if node:
-            self._local = node
-            self._other = other
+        shutil.rmtree(self._repo.localvfs.join("merge"), True)
+
+        self._read(rustworkingcopy.mergestate(node, other, labels))
+
         if ancestors:
             self._ancestors = ancestors
-        self._readmergedriver = None
-        if self.mergedriver:
-            self._mdstate = "s"
-        else:
-            self._mdstate = "u"
-        shutil.rmtree(self._repo.localvfs.join("merge"), True)
-        self._results = {}
-        self._dirty = False
 
-    def _read(self):
+    def _read(self, rust_ms):
         """Analyse each record content to restore a serialized state from disk
 
         This function process "record" entry produced by the de-serialization
         of on disk file.
         """
-        self._state = {}
-        self._stateextras = {}
-        self._local = None
-        self._other = None
+        self._rust_ms = rust_ms
+
+        if md := rust_ms.mergedriver():
+            self._readmergedriver = md[0]
+            self._mdstate = md[1]
+        else:
+            self._readmergedriver = None
+            self._mdstate = "s"
+
+        self._results = {}
+        self._dirty = False
 
         # Note: _ancestors isn't written into the state file since the current
         # state file predates it.
@@ -166,87 +132,6 @@ class mergestate:
         for var in ("localctx", "otherctx", "ancestorctxs"):
             if var in vars(self):
                 delattr(self, var)
-        self._readmergedriver = None
-        self._mdstate = "s"
-        unsupported = set()
-        records = self._readrecords()
-        for rtype, record in records:
-            if rtype == "L":
-                self._local = bin(record)
-            elif rtype == "O":
-                self._other = bin(record)
-            elif rtype == "m":
-                bits = record.split("\0", 1)
-                mdstate = bits[1]
-                if len(mdstate) != 1 or mdstate not in "ums":
-                    # the merge driver should be idempotent, so just rerun it
-                    mdstate = "u"
-
-                self._readmergedriver = bits[0]
-                self._mdstate = mdstate
-            elif rtype in "FDCP":
-                bits = record.split("\0")
-                self._state[bits[0]] = bits[1:]
-            elif rtype == "f":
-                filename, rawextras = record.split("\0", 1)
-                extraparts = rawextras.split("\0")
-                extras = {}
-                i = 0
-                while i < len(extraparts):
-                    extras[extraparts[i]] = extraparts[i + 1]
-                    i += 2
-
-                self._stateextras[filename] = extras
-            elif rtype == "l":
-                labels = record.split("\0", 2)
-                self._labels = [l for l in labels if len(l) > 0]
-            elif not rtype.islower():
-                unsupported.add(rtype)
-        self._results = {}
-        self._dirty = False
-
-        if unsupported:
-            raise error.UnsupportedMergeRecords(unsupported)
-
-    def _readrecords(self):
-        """Read on disk merge state for version 2 file
-
-        This format is a list of arbitrary records of the form:
-
-          [type][length][content]
-
-        `type` is a single character, `length` is a 4 byte integer, and
-        `content` is an arbitrary byte sequence of length `length`.
-
-        Returns list of records [(TYPE, data), ...]."""
-        records = []
-        try:
-            f = self._repo.localvfs(self.statepath)
-            data = f.read()
-            off = 0
-            end = len(data)
-            while off < end:
-                rtype = data[off : off + 1]
-                off += 1
-                length = _unpack(">I", data[off : (off + 4)])[0]
-                off += 4
-                record = data[off : (off + length)]
-                off += length
-
-                # This "t" was a measure to fix compatibility with old versions
-                # of Mercurial. I removed the "t" writer in D46075828, but I'm
-                # leaving the reader since merge states could still contain the
-                # "t". This can be deleted once we aren't worried about old
-                # merge state files.
-                if rtype == b"t":
-                    rtype, record = record[0:1], record[1:]
-
-                records.append((decodeutf8(rtype), decodeutf8(record)))
-            f.close()
-        except IOError as err:
-            if err.errno != errno.ENOENT:
-                raise
-        return records
 
     @util.propertycache
     def mergedriver(self):
@@ -293,6 +178,18 @@ class mergestate:
             )
         return [self._repo[node] for node in self._ancestors]
 
+    @util.propertycache
+    def _local(self):
+        return self._rust_ms.local()
+
+    @util.propertycache
+    def _other(self):
+        return self._rust_ms.other()
+
+    @util.propertycache
+    def _labels(self):
+        return self._rust_ms.labels()
+
     def active(self):
         """Whether mergestate is active.
 
@@ -303,65 +200,19 @@ class mergestate:
         # reasons.
         return (
             bool(self._local)
-            or bool(self._state)
+            or not self._rust_ms.isempty()
             or self._repo.localvfs.exists(self.statepath)
         )
 
     def commit(self):
         """Write current state on disk (if necessary)"""
         if self._dirty:
-            records = self._makerecords()
-            self._writerecords(records)
-            self._dirty = False
-
-    def _makerecords(self):
-        records = []
-        records.append(("L", hex(self._local)))
-        records.append(("O", hex(self._other)))
-        if self.mergedriver:
-            records.append(("m", "\0".join([self.mergedriver, self._mdstate])))
-        # Write out state items. In all cases, the value of the state map entry
-        # is written as the contents of the record. The record type depends on
-        # the type of state that is stored, and capital-letter records are used
-        # to prevent older versions of Mercurial that do not support the feature
-        # from loading them.
-        for filename, v in pycompat.iteritems(self._state):
-            if v[0] == "d":
-                # Driver-resolved merge. These are stored in 'D' records.
-                records.append(("D", "\0".join([filename] + v)))
-            elif v[0] in ("pu", "pr"):
-                # Path conflicts. These are stored in 'P' records.  The current
-                # resolution state ('pu' or 'pr') is stored within the record.
-                records.append(("P", "\0".join([filename] + v)))
-            elif v[1] == nullhex or v[6] == nullhex:
-                # Change/Delete or Delete/Change conflicts. These are stored in
-                # 'C' records. v[1] is the local file, and is nullhex when the
-                # file is deleted locally ('dc'). v[6] is the remote file, and
-                # is nullhex when the file is deleted remotely ('cd').
-                records.append(("C", "\0".join([filename] + v)))
+            if md := self.mergedriver:
+                self._rust_ms.setmergedriver((md, self._mdstate))
             else:
-                # Normal files.  These are stored in 'F' records.
-                records.append(("F", "\0".join([filename] + v)))
-        for filename, extras in sorted(pycompat.iteritems(self._stateextras)):
-            rawextras = "\0".join(
-                "%s\0%s" % (k, v) for k, v in pycompat.iteritems(extras)
-            )
-            records.append(("f", "%s\0%s" % (filename, rawextras)))
-        if self._labels is not None:
-            labels = "\0".join(self._labels)
-            records.append(("l", labels))
-        return records
+                self._rust_ms.setmergedriver(None)
 
-    def _writerecords(self, records):
-        """Write out current state to file on disk"""
-        f = self._repo.localvfs(self.statepath, "w")
-        for key, data in records:
-            assert len(key) == 1
-            key = encodeutf8(key)
-            data = encodeutf8(data)
-            format = ">sI%is" % len(data)
-            f.write(_pack(format, key, len(data), data))
-        f.close()
+            self._repo._rsrepo.workingcopy().writemergestate(self._rust_ms)
 
     def add(self, fcl, fco, fca, fd):
         """add a new (potentially?) conflicting file the merge state
@@ -377,17 +228,20 @@ class mergestate:
         else:
             hash = hex(hashlib.sha1(encodeutf8(fcl.path())).digest())
             self._repo.localvfs.write("merge/" + hash, fcl.data())
-        self._state[fd] = [
-            "u",
-            hash,
-            fcl.path(),
-            fca.path(),
-            hex(fca.filenode()),
-            fco.path(),
-            hex(fco.filenode()),
-            fcl.flags(),
-        ]
-        self._stateextras[fd] = {"ancestorlinknode": hex(fca.node())}
+        self._rust_ms.insert(
+            fd,
+            [
+                "u",
+                hash,
+                fcl.path(),
+                fca.path(),
+                hex(fca.filenode()),
+                fco.path(),
+                hex(fco.filenode()),
+                fcl.flags(),
+            ],
+        )
+        self._rust_ms.setextra(fd, "ancestorlinknode", hex(fca.node()))
         self._dirty = True
 
     def addpath(self, path, frename, forigin):
@@ -396,23 +250,23 @@ class mergestate:
         frename: the filename the conflicting file was renamed to
         forigin: origin of the file ('l' or 'r' for local/remote)
         """
-        self._state[path] = ["pu", frename, forigin]
+        self._rust_ms.insert(path, ["pu", frename, forigin])
         self._dirty = True
 
     def __contains__(self, dfile):
-        return dfile in self._state
+        return self._rust_ms.contains(dfile)
 
     def __getitem__(self, dfile):
-        return self._state[dfile][0]
+        return self._rust_ms.get(dfile)[0]
 
     def __iter__(self):
-        return iter(sorted(self._state))
+        return iter(sorted(self._rust_ms.files()))
 
     def files(self):
-        return self._state.keys()
+        return self._rust_ms.files()
 
     def mark(self, dfile, state):
-        self._state[dfile][0] = state
+        self._rust_ms.setstate(dfile, state)
         self._dirty = True
 
     def mdstate(self):
@@ -420,27 +274,21 @@ class mergestate:
 
     def unresolved(self):
         """Obtain the paths of unresolved files."""
-
-        for f, entry in pycompat.iteritems(self._state):
-            if entry[0] in ("u", "pu"):
-                yield f
+        return self._rust_ms.files(("u", "pu"))
 
     def driverresolved(self):
         """Obtain the paths of driver-resolved files."""
-
-        for f, entry in self._state.items():
-            if entry[0] == "d":
-                yield f
+        return self._rust_ms.files(("d",))
 
     def extras(self, filename):
-        return self._stateextras.setdefault(filename, {})
+        return self._rust_ms.extras(filename)
 
     def _resolve(self, preresolve, dfile, wctx):
         """rerun merge process for file path `dfile`"""
         if self[dfile] in "rd":
             return True, 0
-        stateentry = self._state[dfile]
-        state, hexdnode, lfile, afile, hexanode, ofile, hexonode, flags = stateentry
+        stateentry = self._rust_ms.get(dfile)
+        _state, hexdnode, lfile, afile, hexanode, ofile, hexonode, flags = stateentry
         dnode = bin(hexdnode)
         onode = bin(hexonode)
         anode = bin(hexanode)
@@ -515,8 +363,7 @@ class mergestate:
                     fcd = ex.fcd
         if r is None:
             # no real conflict
-            del self._state[dfile]
-            self._stateextras.pop(dfile, None)
+            self._rust_ms.remove(dfile)
             self._dirty = True
         elif not r:
             self.mark(dfile, "r")

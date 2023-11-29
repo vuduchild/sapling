@@ -4,11 +4,12 @@
 # GNU General Public License version 2.
 
 import re
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from .gh_submit import Repository
 
 _HORIZONTAL_RULE = "---"
+_SAPLING_FOOTER_MARKER = "[//]: # (BEGIN SAPLING FOOTER)"
 
 
 def create_pull_request_title_and_body(
@@ -16,6 +17,7 @@ def create_pull_request_title_and_body(
     pr_numbers_and_num_commits: List[Tuple[int, int]],
     pr_numbers_index: int,
     repository: Repository,
+    title: Optional[str] = None,
     reviewstack: bool = True,
 ) -> Tuple[str, str]:
     r"""Returns (title, body) for the pull request.
@@ -63,8 +65,8 @@ def create_pull_request_title_and_body(
     """
     owner, name = repository.get_upstream_owner_and_name()
     pr = pr_numbers_and_num_commits[pr_numbers_index][0]
-    title = firstline(commit_msg)
-    body = commit_msg
+    title = title if title is not None else firstline(commit_msg)
+    body = strip_stack_information(commit_msg)
     extra = []
     if len(pr_numbers_and_num_commits) > 1:
         if reviewstack:
@@ -77,7 +79,7 @@ def create_pull_request_title_and_body(
         )
         extra.append(bulleted_list)
     if extra:
-        body = "\n".join([body, _HORIZONTAL_RULE] + extra)
+        body = "\n".join([body, _HORIZONTAL_RULE, _SAPLING_FOOTER_MARKER] + extra)
     return title, body
 
 
@@ -89,6 +91,13 @@ _STACK_ENTRY = re.compile(r"^\* (__->__ )?#([1-9]\d*).*$")
 _StackEntry = Tuple[bool, int]
 
 
+def strip_stack_information(body: str) -> str:
+    marker = "\n".join([_HORIZONTAL_RULE, _SAPLING_FOOTER_MARKER])
+    if marker in body:
+        body = body.rsplit(marker, maxsplit=1)[0]
+    return body
+
+
 def parse_stack_information(body: str) -> List[_StackEntry]:
     r"""
     >>> reviewstack_url = "https://reviewstack.dev/facebook/sapling/pull/42"
@@ -96,6 +105,7 @@ def parse_stack_information(body: str) -> List[_StackEntry]:
     ...     'The original commit message.\n' +
     ...     'Second line of message.\n' +
     ...     '---\n' +
+    ...     '[//]: # (BEGIN SAPLING FOOTER)\n' +
     ...     'Stack created with [Sapling](https://sapling-scm.com). ' +
     ...     f'Best reviewed with [ReviewStack]({reviewstack_url}).\n' +
     ...     '* #1\n' +
@@ -118,7 +128,7 @@ def parse_stack_information(body: str) -> List[_StackEntry]:
                 # This must be the end of the list.
                 break
         elif is_prev_line_hr:
-            if line.startswith("Stack created with [Sapling]"):
+            if line == _SAPLING_FOOTER_MARKER:
                 in_stack_list = True
             is_prev_line_hr = False
         elif line.rstrip() == _HORIZONTAL_RULE:

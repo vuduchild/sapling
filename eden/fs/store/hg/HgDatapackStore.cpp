@@ -136,6 +136,23 @@ void HgDatapackStore::getTreeBatch(const ImportRequestsList& importRequests) {
       [&, filteredPaths](
           size_t index,
           folly::Try<std::shared_ptr<sapling::Tree>> content) mutable {
+        if (content.hasException()) {
+          XLOGF(
+              DBG6,
+              "Failed to import node={} from EdenAPI (batch tree {}/{}): {}",
+              folly::hexlify(requests[index]),
+              index,
+              requests.size(),
+              content.exception().what().toStdString());
+        } else {
+          XLOGF(
+              DBG6,
+              "Imported node={} from EdenAPI (batch tree: {}/{})",
+              folly::hexlify(requests[index]),
+              index,
+              requests.size());
+        }
+
         if (config_->getEdenConfig()->hgTreeFetchFallback.getValue() &&
             content.hasException()) {
           if (logger_) {
@@ -238,6 +255,23 @@ void HgDatapackStore::getBlobBatch(const ImportRequestsList& importRequests) {
       false,
       // store_.getBlobBatch is blocking, hence we can take these by reference.
       [&](size_t index, folly::Try<std::unique_ptr<folly::IOBuf>> content) {
+        if (content.hasException()) {
+          XLOGF(
+              DBG6,
+              "Failed to import node={} from EdenAPI (batch {}/{}): {}",
+              folly::hexlify(requests[index]),
+              index,
+              requests.size(),
+              content.exception().what().toStdString());
+        } else {
+          XLOGF(
+              DBG6,
+              "Imported node={} from EdenAPI (batch: {}/{})",
+              folly::hexlify(requests[index]),
+              index,
+              requests.size());
+        }
+
         if (config_->getEdenConfig()->hgBlobFetchFallback.getValue() &&
             content.hasException()) {
           if (logger_) {
@@ -309,6 +343,23 @@ void HgDatapackStore::getBlobMetadataBatch(
       // reference.
       [&](size_t index,
           folly::Try<std::shared_ptr<sapling::FileAuxData>> auxTry) {
+        if (auxTry.hasException()) {
+          XLOGF(
+              DBG6,
+              "Failed to import metadata node={} from EdenAPI (batch {}/{}): {}",
+              folly::hexlify(requests[index]),
+              index,
+              requests.size(),
+              auxTry.exception().what().toStdString());
+        } else {
+          XLOGF(
+              DBG6,
+              "Imported metadata node={} from EdenAPI (batch: {}/{})",
+              folly::hexlify(requests[index]),
+              index,
+              requests.size());
+        }
+
         if (auxTry.hasException() &&
             config_->getEdenConfig()->hgBlobMetaFetchFallback.getValue()) {
           // TODO: log EdenApiMiss for metadata

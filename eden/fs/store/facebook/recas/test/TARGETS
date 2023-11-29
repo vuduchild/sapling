@@ -31,10 +31,10 @@ cpp_unittest(
         "//remote_execution/cas/daemon:test-cas-daemon-builder",
         "//remote_execution/lib/cpp:cas_daemon_client_builder",
         "//remote_execution/lib/cpp:icas_counters_manager",
+        "//remote_execution/lib/cpp:icounters",
+        "//remote_execution/lib/cpp:noop-monitoring",
         "//remote_execution/lib/if:common-cpp2-types",
         "//remote_execution/use_cases:usecase_helper",
-        "//stampede/common:icounters",
-        "//stampede/common:noop-monitoring",
     ],
 )
 
