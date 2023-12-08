@@ -188,7 +188,8 @@ class mergestate:
 
     @util.propertycache
     def _labels(self):
-        return self._rust_ms.labels()
+        # Maintain historical behavior of no labels being `None`, not `[]`.
+        return self._rust_ms.labels() or None
 
     def active(self):
         """Whether mergestate is active.
@@ -842,7 +843,10 @@ def manifestmerge(
 
     boolbm = pycompat.bytestr(bool(branchmerge))
     boolf = pycompat.bytestr(bool(force))
-    sparsematch = getattr(repo, "sparsematch", None)
+    shouldsparsematch = hasattr(repo, "sparsematch") and (
+        "eden" not in repo.requirements or "edensparse" in repo.requirements
+    )
+    sparsematch = getattr(repo, "sparsematch", None) if shouldsparsematch else None
     repo.ui.note(_("resolving manifests\n"))
     repo.ui.debug(" branchmerge: %s, force: %s\n" % (boolbm, boolf))
     repo.ui.debug(" ancestor: %s, local: %s, remote: %s\n" % (pa, wctx, p2))
@@ -2335,7 +2339,10 @@ def _update(
 
 
 def getsparsematchers(repo, fp1, fp2):
-    sparsematch = getattr(repo, "sparsematch", None)
+    shouldsparsematch = hasattr(repo, "sparsematch") and (
+        "eden" not in repo.requirements or "edensparse" in repo.requirements
+    )
+    sparsematch = getattr(repo, "sparsematch", None) if shouldsparsematch else None
     if sparsematch is not None:
         from sapling.ext import sparse
 

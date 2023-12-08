@@ -14,3 +14,4 @@ mod tests;
 
 pub use mapping::format_key;
 pub use mapping::RootBasenameSuffixSkeletonManifest;
+pub use path::BssmPath;

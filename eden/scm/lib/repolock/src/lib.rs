@@ -14,7 +14,6 @@ use std::fs::Permissions;
 use std::io;
 use std::io::Write;
 use std::num::NonZeroU64;
-use std::ops::Add;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -22,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
-use std::time::SystemTime;
+use std::time::Instant;
 
 use configmodel::Config;
 use configmodel::ConfigExt;
@@ -45,10 +44,20 @@ struct RepoLockerInner {
     wc_locks: HashMap<PathBuf, ReentrantLockHandle>,
 }
 
-pub struct RepoLockHandle {
+pub struct LockedPath {
     locker: Arc<Mutex<RepoLockerInner>>,
     store: bool,
-    wc_path: Option<PathBuf>,
+
+    // If `store` is true, this is an ".hg/store" directory, else a working copy ".hg" directory.
+    path: PathBuf,
+}
+
+impl std::ops::Deref for LockedPath {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.path
+    }
 }
 
 #[derive(Debug)]
@@ -86,6 +95,7 @@ impl ReentrantLockHandle {
     }
 }
 
+#[derive(Debug)]
 struct LockConfigs {
     pub deadline: Duration,
     pub warn_deadline: Duration,
@@ -105,7 +115,7 @@ impl LockConfigs {
 
         let backoff = Duration::from_secs_f64(
             config
-                .get_or::<f64>("devel", "lock_backoff", || 1.0)?
+                .get_or::<f64>("devel", "lock_backoff", || 0.1)?
                 .max(0_f64),
         );
         Ok(LockConfigs {
@@ -128,18 +138,21 @@ impl RepoLocker {
         })
     }
 
-    pub fn lock_store(&self) -> Result<RepoLockHandle, LockError> {
+    pub fn lock_store(&self) -> Result<LockedPath, LockError> {
         self.lock_store_maybe_wait(true)
     }
 
-    pub fn try_lock_store(&self) -> Result<RepoLockHandle, LockError> {
+    pub fn try_lock_store(&self) -> Result<LockedPath, LockError> {
         self.lock_store_maybe_wait(false)
     }
 
-    fn lock_store_maybe_wait(&self, wait: bool) -> Result<RepoLockHandle, LockError> {
+    fn lock_store_maybe_wait(&self, wait: bool) -> Result<LockedPath, LockError> {
         let mut inner = self.inner.lock();
         inner.lock_store(wait)?;
-        Ok(RepoLockHandle::new_store_lock(self.inner.clone()))
+        Ok(LockedPath::new_store_lock(
+            self.inner.clone(),
+            inner.store_path.clone(),
+        ))
     }
 
     pub fn ensure_store_locked(&self) -> Result<(), LockError> {
@@ -157,11 +170,11 @@ impl RepoLocker {
         }
     }
 
-    pub fn lock_working_copy(&self, wc_dot_hg: PathBuf) -> Result<RepoLockHandle, LockError> {
+    pub fn lock_working_copy(&self, wc_dot_hg: PathBuf) -> Result<LockedPath, LockError> {
         self.lock_working_copy_maybe_wait(wc_dot_hg, true)
     }
 
-    pub fn try_lock_working_copy(&self, wc_dot_hg: PathBuf) -> Result<RepoLockHandle, LockError> {
+    pub fn try_lock_working_copy(&self, wc_dot_hg: PathBuf) -> Result<LockedPath, LockError> {
         self.lock_working_copy_maybe_wait(wc_dot_hg, false)
     }
 
@@ -169,10 +182,10 @@ impl RepoLocker {
         &self,
         wc_dot_hg: PathBuf,
         wait: bool,
-    ) -> Result<RepoLockHandle, LockError> {
+    ) -> Result<LockedPath, LockError> {
         let mut inner = self.inner.lock();
         inner.lock_working_copy(wc_dot_hg.clone(), wait)?;
-        Ok(RepoLockHandle::new_working_copy_lock(
+        Ok(LockedPath::new_working_copy_lock(
             self.inner.clone(),
             wc_dot_hg,
         ))
@@ -248,20 +261,20 @@ impl RepoLockerInner {
     }
 }
 
-impl RepoLockHandle {
-    fn new_store_lock(locker: Arc<Mutex<RepoLockerInner>>) -> Self {
-        RepoLockHandle {
+impl LockedPath {
+    fn new_store_lock(locker: Arc<Mutex<RepoLockerInner>>, store_path: PathBuf) -> Self {
+        LockedPath {
             locker,
             store: true,
-            wc_path: None,
+            path: store_path,
         }
     }
 
     fn new_working_copy_lock(locker: Arc<Mutex<RepoLockerInner>>, wc_path: PathBuf) -> Self {
-        RepoLockHandle {
+        LockedPath {
             locker,
             store: false,
-            wc_path: Some(wc_path),
+            path: wc_path,
         }
     }
 
@@ -272,16 +285,12 @@ impl RepoLockHandle {
         if self.store {
             locker.store_lock.as_ref().unwrap().ref_count()
         } else {
-            locker
-                .wc_locks
-                .get(self.wc_path.as_ref().unwrap())
-                .unwrap()
-                .ref_count()
+            locker.wc_locks.get(&self.path).unwrap().ref_count()
         }
     }
 }
 
-impl fmt::Debug for RepoLockHandle {
+impl fmt::Debug for LockedPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         let locker = self.locker.lock();
         if self.store {
@@ -290,19 +299,16 @@ impl fmt::Debug for RepoLockHandle {
             } else {
                 f.write_str("invalid store lock")?;
             }
-        }
-        if let Some(wc_path) = &self.wc_path {
-            if let Some(handle) = locker.wc_locks.get(wc_path.as_path()) {
-                fmt::Debug::fmt(&handle, f)?;
-            } else {
-                f.write_fmt(format_args!("invalid wc lock {:?}", wc_path))?;
-            }
+        } else if let Some(handle) = locker.wc_locks.get(&self.path) {
+            fmt::Debug::fmt(&handle, f)?;
+        } else {
+            f.write_fmt(format_args!("invalid wc lock {:?}", self.path))?;
         }
         Ok(())
     }
 }
 
-impl Drop for RepoLockHandle {
+impl Drop for LockedPath {
     fn drop(&mut self) {
         let mut locker = self.locker.lock();
         if self.store {
@@ -313,9 +319,8 @@ impl Drop for RepoLockHandle {
             } else {
                 let _ = locker.store_lock.take();
             }
-        }
-        if let Some(wc_path) = &self.wc_path {
-            let wc_lock = locker.wc_locks.get_mut(wc_path.as_path()).unwrap();
+        } else {
+            let wc_lock = locker.wc_locks.get_mut(&self.path).unwrap();
             let lock_count = wc_lock.ref_count();
             if lock_count > 1 {
                 wc_lock.dec_ref_count();
@@ -323,7 +328,7 @@ impl Drop for RepoLockHandle {
                 if !wc_lock.out_of_order() && locker.store_lock.is_some() {
                     panic!("attempted to release wlock before lock");
                 }
-                locker.wc_locks.remove(wc_path.as_path());
+                locker.wc_locks.remove(&self.path);
             }
         }
     }
@@ -336,19 +341,14 @@ fn lock_contents() -> Result<String, LockError> {
 /// lock loops until it can acquire the specified lock, subject to
 /// ui.timeout timeout. Errors other than lock contention are
 /// propagated immediately with no retries.
+#[tracing::instrument(skip_all, fields(name))]
 fn lock(
     config: &LockConfigs,
     dir: &Path,
     name: &str,
     contents: &[u8],
 ) -> Result<LockHandle, LockError> {
-    let now = SystemTime::now();
-
-    let deadline = now.add(config.deadline);
-
-    let warn_deadline = now.add(config.warn_deadline);
-
-    let backoff = config.backoff;
+    let start = Instant::now();
 
     loop {
         match try_lock(dir, name, contents) {
@@ -356,19 +356,19 @@ fn lock(
             Err(err) => match err {
                 LockError::Contended(_) => {
                     // TODO: add user friendly debugging similar to Python locks.
+                    let elapsed = start.elapsed();
 
-                    let now = SystemTime::now();
-                    if now >= warn_deadline {
+                    if elapsed >= config.warn_deadline {
                         tracing::warn!(name, "lock contended");
                     } else {
                         tracing::info!(name, "lock contended");
                     };
 
-                    if now >= deadline {
+                    if elapsed >= config.deadline {
                         return Err(err);
                     }
 
-                    sleep(backoff)
+                    sleep(config.backoff)
                 }
                 _ => return Err(err),
             },

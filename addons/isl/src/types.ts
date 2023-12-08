@@ -464,6 +464,7 @@ export type ConfigName =
 /** local storage keys written by ISL */
 export type LocalStorageName =
   | 'isl.drawer-state'
+  | 'isl.ui-zoom'
   | 'isl.has-shown-getting-started'
   | 'isl.amend-autorestack';
 
@@ -482,6 +483,7 @@ export type ClientToServerMessage =
   | {type: 'fetchShelvedChanges'}
   | {type: 'fetchLatestCommit'; revset: string}
   | {type: 'fetchAllCommitChangedFiles'; hash: Hash}
+  | {type: 'renderMarkup'; markup: string; id: number}
   | {type: 'typeahead'; kind: TypeaheadKind; query: string; id: string}
   | {type: 'requestRepoInfo'}
   | {type: 'requestApplicationInfo'}
@@ -553,6 +555,7 @@ export type ServerToClientMessage =
   | {type: 'fetchedAvatars'; avatars: Map<string, string>}
   | {type: 'fetchedDiffSummaries'; summaries: Result<Map<DiffId, DiffSummary>>}
   | {type: 'fetchedCommitCloudState'; state: Result<CommitCloudSyncState>}
+  | {type: 'renderedMarkup'; html: string; id: number}
   | {type: 'gotSuggestedReviewers'; reviewers: Array<string>; key: string}
   | {type: 'updatedRemoteDiffMessage'; diffId: DiffId; error?: string}
   | {type: 'uploadFileResult'; id: string; result: Result<string>}

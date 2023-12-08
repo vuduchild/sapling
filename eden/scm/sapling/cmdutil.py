@@ -356,7 +356,7 @@ def dorecord(ui, repo, commitfunc, cmdsuggest, backupall, filterfn, *pats, **opt
         will be left in place, so the user can continue working.
         """
 
-        checkunfinished(repo, commit=True)
+        checkunfinished(repo, op="commit")
         wctx = repo[None]
         merge = len(wctx.parents()) > 1
         if merge:
@@ -747,7 +747,7 @@ def _updatecleanmsg(dest=None):
 
 def _graftmsg():
     # tweakdefaults requires `update` to have a rev hence the `.`
-    return _helpmessage(_("@prog@ graft --continue"), _updatecleanmsg())
+    return _helpmessage(_("@prog@ graft --continue"), _("@prog@ graft --abort"))
 
 
 def _mergemsg():
@@ -4725,61 +4725,15 @@ summaryhooks = util.hooks()
 #  - (desturl,   destbranch,   destpeer,   outgoing)
 summaryremotehooks = util.hooks()
 
-# A list of state files kept by multistep operations like graft.
-# Since graft cannot be aborted, it is considered 'clearable' by update.
-# note: bisect is intentionally excluded
-# (state file, clearable, allowcommit, error, hint)
-unfinishedstates = [
-    (
-        "graftstate",
-        True,
-        False,
-        _("graft in progress"),
-        _("use '@prog@ graft --continue' or '@prog@ graft --abort' to abort"),
-    ),
-    (
-        "updatemergestate",
-        True,
-        True,
-        _("update --merge in progress"),
-        _("use '@prog@ goto --continue' to continue"),
-    ),
-    (
-        "updatestate",
-        True,
-        False,
-        _("last update was interrupted"),
-        _(
-            "use '@prog@ goto DESTINATION' to get a consistent checkout\n"
-            "note: '@prog@ goto --continue' is supported in some cases, such as "
-            "during clone, and will resume the checkout where it left off"
-        ),
-    ),
-]
 
-
-def checkunfinished(repo, commit=False):
+def checkunfinished(repo, op=None):
     """Look for an unfinished multistep operation, like graft, and abort
     if found. It's probably good to check this right before
     bailifchanged().
     """
-    for f, clearable, allowcommit, msg, hint in unfinishedstates:
-        if commit and allowcommit:
-            continue
-        if repo.localvfs.exists(f):
-            raise error.Abort(msg, hint=hint)
-
-
-def clearunfinished(repo):
-    """Check for unfinished operations (as above), and clear the ones
-    that are clearable.
-    """
-    for f, clearable, allowcommit, msg, hint in unfinishedstates:
-        if not clearable and repo.localvfs.exists(f):
-            raise error.Abort(msg, hint=hint)
-    for f, clearable, allowcommit, msg, hint in unfinishedstates:
-        if clearable and repo.localvfs.exists(f):
-            util.unlink(repo.localvfs.join(f))
+    state = repo._rsrepo.workingcopy().commandstate(op)
+    if state:
+        raise error.Abort(state[0], hint=state[1])
 
 
 afterresolvedstates = [

@@ -229,8 +229,16 @@ def replacefilecache(cls, propname: str, replacement: Callable[..., object]) -> 
         raise AttributeError(_("type '%s' has no property '%s'") % (origcls, propname))
 
 
+def _getsparseflavor(repo):
+    return "filteredfs" if "eden" in repo.requirements else "sparse"
+
+
+def _isedensparse(repo):
+    return "edensparse" in repo.requirements
+
+
 def _checksparse(repo) -> None:
-    if "eden" in repo.requirements:
+    if "eden" in repo.requirements and "edensparse" not in repo.requirements:
         raise error.Abort(
             _(
                 "You're using an Eden repo and thus don't need sparse profiles.  "
@@ -239,11 +247,13 @@ def _checksparse(repo) -> None:
         )
 
     if not hasattr(repo, "sparsematch"):
-        raise error.Abort(_("this is not a sparse repository"))
+        raise error.Abort(_(f"this is not a {_getsparseflavor(repo)} repository"))
 
 
 def _hassparse(repo):
-    return "eden" not in repo.requirements and hasattr(repo, "sparsematch")
+    return (
+        "eden" not in repo.requirements and hasattr(repo, "sparsematch")
+    ) or "edensparse" in repo.requirements
 
 
 def _setupupdates(_ui) -> None:
@@ -259,17 +269,27 @@ def _setupupdates(_ui) -> None:
         # If the working context is in memory (virtual), there's no need to
         # apply the user's sparse rules at all (and in fact doing so would
         # cause unexpected behavior in the real working copy).
-        if not hasattr(repo, "sparsematch") or wctx.isinmemory():
+        if not _hassparse(repo) or wctx.isinmemory():
             return actions, diverge, renamedelete
 
         files = set()
         prunedactions = {}
-        oldrevs = [pctx.rev() for pctx in wctx.parents()]
-        oldsparsematch = repo.sparsematch(*oldrevs)
 
-        repo._clearpendingprofileconfig(all=True)
-        oldprofileconfigs = _getcachedprofileconfigs(repo)
-        newprofileconfigs = repo._creatependingprofileconfigs()
+        # Skip calculations for edensparse repos. We can't simply move these
+        # definitions to the if statement below because they must be calculated
+        # prior to any temporary files being added
+        oldrevs, oldsparsematch, oldprofileconfigs, newprofileconfigs = (
+            None,
+            None,
+            None,
+            None,
+        )
+        if not _isedensparse(repo):
+            oldrevs = [pctx.rev() for pctx in wctx.parents()]
+            oldsparsematch = repo.sparsematch(*oldrevs)
+            repo._clearpendingprofileconfig(all=True)
+            oldprofileconfigs = _getcachedprofileconfigs(repo)
+            newprofileconfigs = repo._creatependingprofileconfigs()
 
         if branchmerge:
             # If we're merging, use the wctx filter, since we're merging into
@@ -325,44 +345,50 @@ def _setupupdates(_ui) -> None:
             for file, flags, msg in actions:
                 dirstate.normal(file)
 
-        profiles = repo.getactiveprofiles()
-        changedprofiles = (profiles & files) or (oldprofileconfigs != newprofileconfigs)
-        # If an active profile changed during the update, refresh the checkout.
-        # Don't do this during a branch merge, since all incoming changes should
-        # have been handled by the temporary includes above.
-        if changedprofiles and not branchmerge:
-            scopename = "Calculating additional actions for sparse profile update"
-            with util.traced(scopename), progress.spinner(ui, "sparse config"):
-                mf = mctx.manifest()
-                fullprefetchonsparseprofilechange = ui.configbool(
-                    "sparse", "force_full_prefetch_on_sparse_profile_change"
-                )
-                fullprefetchonsparseprofilechange |= not hasattr(mf, "walk")
+        # Eden handles refreshing the checkout on its own. This logic is only
+        # needed for non-Eden sparse checkouts where Mercurial must refresh the
+        # checkout when the sparse profile changes.
+        if not _isedensparse(repo):
+            profiles = repo.getactiveprofiles()
+            changedprofiles = (profiles & files) or (
+                oldprofileconfigs != newprofileconfigs
+            )
+            # If an active profile changed during the update, refresh the checkout.
+            # Don't do this during a branch merge, since all incoming changes should
+            # have been handled by the temporary includes above.
+            if changedprofiles and not branchmerge:
+                scopename = "Calculating additional actions for sparse profile update"
+                with util.traced(scopename), progress.spinner(ui, "sparse config"):
+                    mf = mctx.manifest()
+                    fullprefetchonsparseprofilechange = ui.configbool(
+                        "sparse", "force_full_prefetch_on_sparse_profile_change"
+                    )
+                    fullprefetchonsparseprofilechange |= not hasattr(mf, "walk")
 
-                with ui.configoverride(
-                    {("treemanifest", "ondemandfetch"): True}, "sparseprofilechange"
-                ):
-                    if fullprefetchonsparseprofilechange:
-                        # We're going to need a full manifest, so if treemanifest is in
-                        # use, we should prefetch. Since our tree might be incomplete
-                        # (and its root could be unknown to the server if this is a
-                        # local commit), we use BFS prefetching to "complete" our tree.
-                        if hasattr(repo, "forcebfsprefetch"):
-                            repo.forcebfsprefetch([mctx.manifestnode()])
+                    with ui.configoverride(
+                        {("treemanifest", "ondemandfetch"): True}, "sparseprofilechange"
+                    ):
+                        if fullprefetchonsparseprofilechange:
+                            # We're going to need a full manifest, so if treemanifest is in
+                            # use, we should prefetch. Since our tree might be incomplete
+                            # (and its root could be unknown to the server if this is a
+                            # local commit), we use BFS prefetching to "complete" our tree.
+                            if hasattr(repo, "forcebfsprefetch"):
+                                repo.forcebfsprefetch([mctx.manifestnode()])
 
-                        iter = mf
-                    else:
-                        match = matchmod.xormatcher(oldsparsematch, sparsematch)
-                        iter = mf.walk(match)
+                            iter = mf
+                        else:
+                            match = matchmod.xormatcher(oldsparsematch, sparsematch)
+                            iter = mf.walk(match)
 
-                    for file in iter:
-                        old = oldsparsematch(file)
-                        new = sparsematch(file)
-                        if not old and new:
-                            flags = mf.flags(file)
-                            prunedactions[file] = ("g", (flags, False), "")
-                        elif old and not new:
-                            prunedactions[file] = ("r", [], "")
+                        for file in iter:
+                            old = oldsparsematch(file)
+                            new = sparsematch(file)
+                            if not old and new:
+                                flags = mf.flags(file)
+                                prunedactions[file] = ("g", (flags, False), "")
+                            elif old and not new:
+                                prunedactions[file] = ("r", [], "")
 
         return prunedactions, diverge, renamedelete
 
@@ -372,13 +398,13 @@ def _setupupdates(_ui) -> None:
         try:
             results = orig(repo, node, **kwargs)
         except Exception:
-            if _hassparse(repo):
+            if _hassparse(repo) and not _isedensparse(repo):
                 repo._clearpendingprofileconfig()
             raise
 
         # If we're updating to a location, clean up any stale temporary includes
         # (ex: this happens during hg rebase --abort).
-        if hasattr(repo, "sparsematch"):
+        if _hassparse(repo):
             repo.prunetemporaryincludes()
 
         return results
@@ -394,16 +420,24 @@ def _setupcommit(ui) -> None:
         # Use unfiltered to avoid computing hidden commits
         repo = self._repo
 
-        if hasattr(repo, "sparsematch"):
-            ctx = repo[node]
-            profiles = getsparsepatterns(repo, ctx.rev()).allprofiles()
-            if profiles & set(ctx.files()):
-                origstatus = repo.status()
-                origsparsematch = repo.sparsematch(
-                    *list(p.rev() for p in ctx.parents() if p.rev() != nullrev)
-                )
-                _refresh(repo.ui, repo, origstatus, origsparsematch, True)
-
+        if _hassparse(repo):
+            if not _isedensparse(repo):
+                # Eden sparse repos don't need to refresh -- that's handled on
+                # the EdenFS side
+                ctx = repo[node]
+                profiles = getsparsepatterns(repo, ctx.rev()).allprofiles()
+                if profiles & set(ctx.files()):
+                    origstatus = repo.status()
+                    origsparsematch = repo.sparsematch(
+                        *list(p.rev() for p in ctx.parents() if p.rev() != nullrev)
+                    )
+                    repo._refreshsparse(repo.ui, origstatus, origsparsematch, True)
+            else:
+                # We just created a new commit that the edenfs_ffi Rust
+                # repo won't know about until we flush in-memory commit
+                # data to disk. Flush now to avoid unknown commit id errors
+                # in EdenFS when checking edensparse contents.
+                repo.changelog.inner.flushcommitdata()
             repo.prunetemporaryincludes()
 
     extensions.wrapfunction(context.committablectx, "markcommitted", _refreshoncommit)
@@ -478,7 +512,7 @@ def _trackdirstatesizes(lui: "uimod.ui", repo: "localrepo.localrepository") -> N
         if (
             repo.ui.configbool("sparse", "largecheckouthint")
             and dirstatesize >= repo.ui.configint("sparse", "largecheckoutcount")
-            and _hassparse(repo)
+            and (_hassparse(repo) and not _isedensparse(repo))
         ):
             hintutil.trigger("sparse-largecheckout", dirstatesize, repo)
 
@@ -584,7 +618,7 @@ def _setupdirstate(ui) -> None:
         def __get__(self, obj, type=None):
             repo = obj.repo if hasattr(obj, "repo") else None
             origignore = self.orig.__get__(obj)
-            if repo is None or not hasattr(repo, "sparsematch"):
+            if repo is None or not _hassparse(repo):
                 return origignore
 
             sparsematch = repo.sparsematch()
@@ -610,7 +644,11 @@ def _setupdirstate(ui) -> None:
             # skips O(working copy) scans, and affect absorb perf.
             return orig(self, parent, allfiles, changedfiles, exact=exact)
 
-        if hasattr(self, "repo") and hasattr(self.repo, "sparsematch"):
+        if (
+            hasattr(self, "repo")
+            and _hassparse(self.repo)
+            and not _isedensparse(self.repo)
+        ):
             with progress.spinner(ui, "applying sparse profile"):
                 matcher = self.repo.sparsematch()
                 allfiles = allfiles.matches(matcher)
@@ -639,7 +677,7 @@ def _setupdirstate(ui) -> None:
         def _wrapper(orig, self, *args):
             if hasattr(self, "repo"):
                 repo = self.repo
-                if hasattr(repo, "sparsematch"):
+                if _hassparse(repo):
                     dirstate = repo.dirstate
                     sparsematch = repo.sparsematch()
                     for f in args:
@@ -665,7 +703,7 @@ def _setupdirstate(ui) -> None:
         st = orig(self, match, ignored, clean, unknown)
         if hasattr(self, "repo"):
             repo = self.repo
-            if hasattr(repo, "sparsematch"):
+            if _hassparse(repo):
                 sparsematch = repo.sparsematch()
                 st = scmutil.status(
                     *([f for f in files if sparsematch(f)] for files in st)
@@ -753,7 +791,7 @@ def _setupdiff(ui) -> None:
         issparse = False
         # Make sure --sparse option is just ignored when it's not
         # a sparse repo e.g. on eden checkouts.
-        if _hassparse(repo):
+        if _hassparse(repo) and not _isedensparse(repo):
             issparse = bool(opts.get("sparse"))
         if issparse:
             extensions.wrapfunction(patch, "trydiff", trydiff)
@@ -867,8 +905,190 @@ class SparseProfile:
 metadata_key_value: Pattern[str] = re.compile(r"(?P<key>.*)\s*[:=]\s*(?P<value>.*)")
 
 
+class SparseMixin:
+    def writesparseconfig(self, include, exclude, profiles):
+        raw = ""
+        if _isedensparse(self):
+            profiles = list(profiles)
+            if len(profiles) > 1 or len(include) != 0 or len(exclude) != 0:
+                raise error.ProgrammingError(
+                    "the edensparse extension only supports 1 active profile (and no additional includes/excludes) at a time"
+                )
+            raw = f"%include {profiles[0]}" if len(profiles) == 1 else ""
+        else:
+            raw = "%s[include]\n%s\n[exclude]\n%s\n" % (
+                "".join(["%%include %s\n" % p for p in sorted(profiles)]),
+                "\n".join(sorted(include)),
+                "\n".join(sorted(exclude)),
+            )
+        self.localvfs.writeutf8("sparse", raw)
+        self.invalidatesparsecache()
+
+    def invalidatesparsecache(self):
+        if not _isedensparse(self):
+            self._sparsecache.clear()
+
+    def _refreshsparse(self, ui, origstatus, origsparsematch, force):
+        """Refreshes which files are on disk by comparing the old status and
+        sparsematch with the new sparsematch.
+
+        Will raise an exception if a file with pending changes is being excluded
+        or included (unless force=True).
+        """
+        modified, added, removed, deleted, unknown, ignored, clean = origstatus
+
+        # Verify there are no pending changes
+        pending = set()
+        pending.update(modified)
+        pending.update(added)
+        pending.update(removed)
+        sparsematch = self.sparsematch()
+        abort = False
+        if len(pending) > 0:
+            ui.note(_("verifying pending changes for refresh\n"))
+        for file in pending:
+            if not sparsematch(file):
+                ui.warn(_("pending changes to '%s'\n") % file)
+                abort = not force
+        if abort:
+            raise error.Abort(_("could not update sparseness due to pending changes"))
+
+        return self._applysparsetoworkingcopy(
+            force, origsparsematch, sparsematch, pending
+        )
+
+    def _applysparsetoworkingcopy(force, origsparsematch, sparsematch, pending):
+        raise error.ProgrammingError(
+            _(
+                "SparseMixin users must implement their own logic for applying sparse updates to the working copy."
+            )
+        )
+
+    def sparsematch(self, *revs, **kwargs):
+        """Returns the sparse match function for the given revs
+
+        If multiple revs are specified, the match function is the union
+        of all the revs.
+
+        `includetemp` is used to indicate if the temporarily included file
+        should be part of the matcher.
+
+        `config` can be used to specify a different sparse profile
+        from the default .hg/sparse active profile
+
+        """
+        if not revs or revs == (None,):
+            revs = [
+                self.changelog.rev(node)
+                for node in self.dirstate.parents()
+                if node != nullid
+            ]
+        if not revs:
+            # Need a revision to read .hg/sparse
+            revs = [nullrev]
+
+        includetemp = kwargs.get("includetemp", True)
+
+        # Don't allow overrides for edensparse checkouts
+        rawconfig = kwargs.get("config") if not _isedensparse(self) else None
+
+        cachekey = self._cachekey(revs, includetemp=includetemp)
+
+        # The raw config could be anything, which kinda circumvents the
+        # expectation that we could deterministically load a sparse matcher
+        # give some revs. rawconfig is only set during some debug commands,
+        # so let's just not use the cache when it is present.
+        if rawconfig is None:
+            result = self._sparsecache.get(cachekey, None)
+            if result is not None:
+                return result
+
+        result = computesparsematcher(
+            self,
+            revs,
+            rawconfig=rawconfig,
+            nocatchall=kwargs.get("nocatchall", False),
+        )
+
+        if kwargs.get("includetemp", True):
+            tempincludes = self.gettemporaryincludes()
+            if tempincludes:
+                result = forceincludematcher(result, tempincludes)
+
+        if rawconfig is None:
+            self._sparsecache[cachekey] = result
+
+        return result
+
+    def _cachekey(self, revs, includetemp=False):
+        sha1 = hashlib.sha1()
+        for rev in revs:
+            sha1.update(self[rev].hex().encode("utf8"))
+        if includetemp:
+            try:
+                sha1.update(self.localvfs.read("tempsparse"))
+            except (OSError, IOError):
+                pass
+        return sha1.hexdigest()
+
+    def gettemporaryincludes(self):
+        existingtemp = set()
+        if self.localvfs.exists("tempsparse"):
+            raw = self.localvfs.readutf8("tempsparse")
+            existingtemp.update(raw.split("\n"))
+        return existingtemp
+
+    def addtemporaryincludes(self, files):
+        includes = self.gettemporaryincludes()
+        for file in files:
+            includes.add(file)
+        self._writetemporaryincludes(includes)
+
+    def _writetemporaryincludes(self, includes):
+        raw = "\n".join(sorted(includes))
+        self.localvfs.writeutf8("tempsparse", raw)
+        self.invalidatesparsecache()
+
+    def prunetemporaryincludes(self):
+        if self.localvfs.exists("tempsparse"):
+            if not _isedensparse(self):
+                origstatus = self.status()
+                modified, added, removed, deleted, a, b, c = origstatus
+                if modified or added or removed or deleted:
+                    # Still have pending changes. Don't bother trying to prune.
+                    return
+
+            flavortext = _getsparseflavor(self)
+            sparsematch = self.sparsematch(includetemp=False)
+            dirstate = self.dirstate
+            actions = []
+            dropped = []
+            tempincludes = self.gettemporaryincludes()
+            for file in tempincludes:
+                if file in dirstate and not sparsematch(file):
+                    message = f"dropping temporarily included {flavortext} files"
+                    actions.append((file, None, message))
+                    dropped.append(file)
+
+            typeactions = collections.defaultdict(list)
+            typeactions["r"] = actions
+            mergemod.applyupdates(self, typeactions, self[None], self["."], False)
+
+            # Fix dirstate
+            for file in dropped:
+                dirstate.untrack(file)
+
+            self.localvfs.unlink("tempsparse")
+            self.invalidatesparsecache()
+            msg = _(
+                "cleaned up %d temporarily added file(s) from the "
+                f"{flavortext} checkout\n"
+            )
+            self.ui.status(msg % len(tempincludes))
+
+
 def _wraprepo(ui, repo) -> None:
-    class SparseRepo(repo.__class__):
+    class SparseRepo(repo.__class__, SparseMixin):
         def _getlatestprofileconfigs(self):
             includes = collections.defaultdict(list)
             excludes = collections.defaultdict(list)
@@ -950,74 +1170,6 @@ def _wraprepo(ui, repo) -> None:
             self.invalidatesparsecache()
             return super(SparseRepo, self).invalidatecaches()
 
-        def invalidatesparsecache(self):
-            self._sparsecache.clear()
-
-        def sparsematch(self, *revs, **kwargs):
-            """Returns the sparse match function for the given revs
-
-            If multiple revs are specified, the match function is the union
-            of all the revs.
-
-            `includetemp` is used to indicate if the temporarily included file
-            should be part of the matcher.
-
-            `config` can be used to specify a different sparse profile
-            from the default .hg/sparse active profile
-
-            """
-            if not revs or revs == (None,):
-                revs = [
-                    self.changelog.rev(node)
-                    for node in self.dirstate.parents()
-                    if node != nullid
-                ]
-            if not revs:
-                # Need a revision to read .hg/sparse
-                revs = [nullrev]
-
-            includetemp = kwargs.get("includetemp", True)
-            rawconfig = kwargs.get("config")
-
-            cachekey = self._cachekey(revs, includetemp=includetemp)
-
-            # The raw config could be anything, which kinda circumvents the
-            # expectation that we could deterministically load a sparse matcher
-            # give some revs. rawconfig is only set during some debug commands,
-            # so let's just not use the cache when it is present.
-            if rawconfig is None:
-                result = self._sparsecache.get(cachekey, None)
-                if result is not None:
-                    return result
-
-            result = computesparsematcher(
-                self,
-                revs,
-                rawconfig=rawconfig,
-                nocatchall=kwargs.get("nocatchall", False),
-            )
-
-            if kwargs.get("includetemp", True):
-                tempincludes = self.gettemporaryincludes()
-                if tempincludes:
-                    result = forceincludematcher(result, tempincludes)
-
-            if rawconfig is None:
-                self._sparsecache[cachekey] = result
-
-            return result
-
-        def _cachekey(self, revs, includetemp=False):
-            sha1 = hashlib.sha1()
-            for rev in revs:
-                sha1.update(self[rev].hex().encode("utf8"))
-            if includetemp:
-                try:
-                    sha1.update(self.localvfs.read("tempsparse"))
-                except (OSError, IOError):
-                    pass
-            return sha1.hexdigest()
-
         def getactiveprofiles(self):
             # Use unfiltered to avoid computing hidden commits
             repo = self
@@ -1034,67 +1186,106 @@ def _wraprepo(ui, repo) -> None:
 
             return activeprofiles
 
-        def writesparseconfig(self, include, exclude, profiles):
-            raw = "%s[include]\n%s\n[exclude]\n%s\n" % (
-                "".join(["%%include %s\n" % p for p in sorted(profiles)]),
-                "\n".join(sorted(include)),
-                "\n".join(sorted(exclude)),
-            )
-            self.localvfs.writeutf8("sparse", raw)
-            self.invalidatesparsecache()
-
-        def addtemporaryincludes(self, files):
-            includes = self.gettemporaryincludes()
-            for file in files:
-                includes.add(file)
-            self._writetemporaryincludes(includes)
-
-        def gettemporaryincludes(self):
-            existingtemp = set()
-            if self.localvfs.exists("tempsparse"):
-                raw = self.localvfs.readutf8("tempsparse")
-                existingtemp.update(raw.split("\n"))
-            return existingtemp
-
-        def _writetemporaryincludes(self, includes):
-            raw = "\n".join(sorted(includes))
-            self.localvfs.writeutf8("tempsparse", raw)
-            self.invalidatesparsecache()
-
-        def prunetemporaryincludes(self):
-            if self.localvfs.exists("tempsparse"):
-                origstatus = self.status()
-                modified, added, removed, deleted, a, b, c = origstatus
-                if modified or added or removed or deleted:
-                    # Still have pending changes. Don't bother trying to prune.
-                    return
-
-                sparsematch = self.sparsematch(includetemp=False)
+        def _applysparsetoworkingcopy(
+            self, force, origsparsematch, sparsematch, pending
+        ):
+            # Calculate actions
+            ui.note(_("calculating actions for refresh\n"))
+            with progress.spinner(ui, "populating file set"):
                 dirstate = self.dirstate
-                actions = []
+                ctx = self["."]
+                added = []
+                lookup = []
                 dropped = []
-                tempincludes = self.gettemporaryincludes()
-                for file in tempincludes:
-                    if file in dirstate and not sparsematch(file):
-                        message = "dropping temporarily included sparse files"
-                        actions.append((file, None, message))
+                mf = ctx.manifest()
+                # Only care about files covered by the old or the new matcher.
+                unionedmatcher = matchmod.unionmatcher([origsparsematch, sparsematch])
+                files = set(mf.walk(unionedmatcher))
+
+            actions = {}
+
+            with progress.bar(ui, _("calculating"), total=len(files)) as prog:
+                for file in files:
+                    prog.value += 1
+
+                    old = origsparsematch(file)
+                    new = sparsematch(file)
+                    # Add files that are newly included, or that don't exist in
+                    # the dirstate yet.
+                    if (new and not old) or (old and new and not file in dirstate):
+                        fl = mf.flags(file)
+                        if self.wvfs.exists(file):
+                            actions[file] = ("e", (fl,), "")
+                            lookup.append(file)
+                        else:
+                            actions[file] = ("g", (fl, False), "")
+                            added.append(file)
+                    # Drop files that are newly excluded, or that still exist in
+                    # the dirstate.
+                    elif (old and not new) or (not (old or new) and file in dirstate):
+                        dropped.append(file)
+                        if file not in pending:
+                            actions[file] = ("r", [], "")
+
+            # Verify there are no pending changes in newly included files
+            if len(lookup) > 0:
+                ui.note(_("verifying no pending changes in newly included files\n"))
+            abort = False
+            for file in lookup:
+                ui.warn(_("pending changes to '%s'\n") % file)
+                abort = not force
+            if abort:
+                raise error.Abort(
+                    _(
+                        "cannot change sparseness due to "
+                        + "pending changes (delete the files or use --force "
+                        + "to bring them back dirty)"
+                    )
+                )
+
+            # Check for files that were only in the dirstate.
+            for file, state in pycompat.iteritems(dirstate):
+                if not file in files:
+                    old = origsparsematch(file)
+                    new = sparsematch(file)
+                    if old and not new:
                         dropped.append(file)
 
-                typeactions = collections.defaultdict(list)
-                typeactions["r"] = actions
-                mergemod.applyupdates(self, typeactions, self[None], self["."], False)
+            # Apply changes to disk
+            if len(actions) > 0:
+                ui.note(_("applying changes to disk (%d actions)\n") % len(actions))
+            typeactions = dict(
+                (m, []) for m in "a f g am cd dc r rg dm dg m e k p pr".split()
+            )
 
-                # Fix dirstate
+            with progress.bar(ui, _("applying"), total=len(actions)) as prog:
+                for f, (m, args, msg) in pycompat.iteritems(actions):
+                    prog.value += 1
+                    if m not in typeactions:
+                        typeactions[m] = []
+                    typeactions[m].append((f, args, msg))
+                mergemod.applyupdates(repo, typeactions, repo[None], repo["."], False)
+
+            # Fix dirstate
+            filecount = len(added) + len(dropped) + len(lookup)
+            if filecount > 0:
+                ui.note(_("updating dirstate\n"))
+            with progress.bar(ui, _("recording"), _("files"), filecount) as prog:
+                for file in added:
+                    prog.value += 1
+                    dirstate.normal(file)
+
                 for file in dropped:
+                    prog.value += 1
                     dirstate.untrack(file)
 
-                self.localvfs.unlink("tempsparse")
-                self.invalidatesparsecache()
-                msg = _(
-                    "cleaned up %d temporarily added file(s) from the "
-                    "sparse checkout\n"
-                )
-                self.ui.status(msg % len(tempincludes))
+                for file in lookup:
+                    prog.value += 1
+                    # File exists on disk, and we're bringing it back in an unknown
+                    # state.
+                    dirstate.normallookup(file)
+
+            return added, dropped, lookup
 
     if "dirstate" in repo._filecache:
         repo.dirstate.repo = repo
@@ -1149,7 +1340,9 @@ def getsparsepatterns(
             return SparseConfig(None, [], [])
 
         raw = repo.localvfs.readutf8("sparse")
-        rawconfig = readsparseconfig(repo, raw, filename=repo.localvfs.join("sparse"))
+        rawconfig = readsparseconfig(
+            repo, raw, filename=repo.localvfs.join("sparse"), depth=0
+        )
     elif not isinstance(rawconfig, RawSparseConfig):
         raise error.ProgrammingError(
             "getsparsepatterns.rawconfig must "
@@ -1167,7 +1360,7 @@ def getsparsepatterns(
     onlyv1 = True
     for kind, value in rawconfig.lines:
         if kind == "profile":
-            profile = readsparseprofile(repo, rev, value, profileconfigs)
+            profile = readsparseprofile(repo, rev, value, profileconfigs, depth=1)
             if profile is not None:
                 profiles.append(profile)
                 # v1 config's put all includes before all excludes, so
@@ -1229,7 +1422,7 @@ def getsparsepatterns(
 
 
 def readsparseconfig(
-    repo, raw, filename: Optional[str] = None, warn: bool = True
+    repo, raw, filename: Optional[str] = None, warn: bool = True, depth: int = 0
 ) -> RawSparseConfig:
     """Takes a string sparse config and returns a SparseConfig
 
@@ -1325,13 +1518,30 @@ def readsparseconfig(
                 _("unknown sparse config line: '%s' section: '%s'\n") % (line, current)
             )
 
+    # Edensparse only supports v2 profiles
+    if _isedensparse(repo):
+        metadata["version"] = []
+        metadata["version"] = ["2"]
+
     metadata = {key: "\n".join(value).strip() for key, value in metadata.items()}
     # pyre-fixme[19]: Expected 0 positional arguments.
-    return RawSparseConfig(raw, filename, lines, profiles, metadata)
+    rawconfig = RawSparseConfig(raw, filename, lines, profiles, metadata)
+    if _isedensparse(repo):
+        include, exclude = rawconfig.toincludeexclude()
+        if depth == 0 and (len(profiles) > 1 or len(include) != 0 or len(exclude) != 0):
+            raise error.ProgrammingError(
+                "the edensparse extension only supports 1 active profile (and no additional includes/excludes) at a time"
+            )
+        elif depth > 0 and len(profiles) > 0:
+            raise error.ProgrammingError(
+                "the edensparse extension does not support nested profiles (%include rules)"
+            )
+
+    return rawconfig
 
 
 def readsparseprofile(
-    repo, rev, name: Optional[str], profileconfigs
+    repo, rev, name: Optional[str], profileconfigs, depth: int
 ) -> Optional[SparseProfile]:
     ctx = repo[rev]
     try:
@@ -1348,15 +1558,20 @@ def readsparseprofile(
             repo.ui.debug(msg)
         return None
 
-    rawconfig = readsparseconfig(repo, raw, filename=name)
+    rawconfig = readsparseconfig(repo, raw, filename=name, depth=depth)
 
     rules = []
     ruleorigins = []
     profiles = set()
     for kind, value in rawconfig.lines:
         if kind == "profile":
+            if _isedensparse(repo) and depth > 1:
+                raise error.Abort(
+                    "the edensparse extension does not support nested filter "
+                    "profiles (i.e. `%include` rules)"
+                )
             profiles.add(value)
-            profile = readsparseprofile(repo, rev, value, profileconfigs)
+            profile = readsparseprofile(repo, rev, value, profileconfigs, depth + 1)
             if profile is not None:
                 for (i, rule) in enumerate(profile.rules):
                     rules.append(rule)
@@ -1805,7 +2020,7 @@ def sparse(ui, repo, *pats, **opts) -> None:
 
     if refresh:
         with repo.wlock():
-            c = _refresh(ui, repo, repo.status(), repo.sparsematch(), force)
+            c = repo._refreshsparse(ui, repo.status(), repo.sparsematch(), force)
             fcounts = list(map(len, c))
             _verbose_output(ui, opts, 0, 0, 0, *fcounts)
 
@@ -1829,13 +2044,12 @@ subcmd = sparse.subcommand(
 )
 
 
-@subcmd("show", commands.templateopts)
-def show(ui, repo, **opts) -> None:
-    """show the currently enabled sparse profile"""
+def _showsubcmdlogic(ui, repo, opts) -> None:
     _checksparse(repo)
+    flavortext = _getsparseflavor(repo)
     if not repo.localvfs.exists("sparse"):
         if not ui.plain():
-            ui.status(_("No sparse profile enabled\n"))
+            ui.status(_(f"No {flavortext} profile enabled\n"))
         return
 
     raw = repo.localvfs.readutf8("sparse")
@@ -1852,32 +2066,35 @@ def show(ui, repo, **opts) -> None:
             raw = getrawprofile(repo, profile, ".")
         except KeyError:
             return [(depth, profile, LOOKUP_NOT_FOUND, "")]
-        sc = readsparseconfig(repo, raw)
+        sc = readsparseconfig(repo, raw, depth=depth)
 
         profileinfo = [(depth, profile, LOOKUP_SUCCESS, sc.metadata.get("title"))]
         for profile in sorted(sc.profiles):
             profileinfo.extend(getprofileinfo(profile, depth + 1))
         return profileinfo
 
-    ui.pager("sparse show")
-    with ui.formatter("sparse", opts) as fm:
+    ui.pager(f"{flavortext} show")
+    with ui.formatter(f"{flavortext}", opts) as fm:
         if profiles:
             profileinfo = []
             fm.plain(_("Enabled Profiles:\n\n"))
-            profileinfo = sum((getprofileinfo(p, 0) for p in sorted(profiles)), [])
+            startingdepth = 1 if _isedensparse(repo) else 0
+            profileinfo = sum(
+                (getprofileinfo(p, startingdepth) for p in sorted(profiles)), []
+            )
             maxwidth = max(len(name) for depth, name, lookup, title in profileinfo)
             maxdepth = max(depth for depth, name, lookup, title in profileinfo)
 
             for depth, name, lookup, title in profileinfo:
                 if lookup == LOOKUP_SUCCESS:
                     if depth > 0:
-                        label = "sparse.profile.included"
+                        label = f"{flavortext}.profile.included"
                         status = "~"
                     else:
-                        label = "sparse.profile.active"
+                        label = f"{flavortext}.profile.active"
                         status = "*"
                 else:
-                    label = "sparse.profile.notfound"
+                    label = f"{flavortext}.profile.notfound"
                     status = "!"
 
                 fm.startitem()
@@ -1910,6 +2127,12 @@ def show(ui, repo, **opts) -> None:
                 fm.startitem()
                 fm.data(type="exclude")
                 fm.write("name", "  %s\n", fname, label="sparse.exclude")
+
+
+@subcmd("show", commands.templateopts)
+def show(ui, repo, **opts) -> None:
+    """show the currently enabled sparse profile"""
+    _showsubcmdlogic(ui, repo, opts)
 
 
 @command(
@@ -2461,24 +2684,24 @@ def disableprofilesubcmd(ui, repo, *pats, **opts) -> None:
     _config(ui, repo, pats, opts, disableprofile=True, **commonopts)
 
 
+def normalizeprofile(repo, p):
+    # We want a canonical path from root of repo. Check if given path is already
+    # canonical or is relative from cwd. This also normalizes path separators.
+    for maybebase in (repo.root, repo.getcwd()):
+        try:
+            norm = pathutil.canonpath(repo.root, maybebase, p)
+        except Exception:
+            continue
+        if repo.wvfs.exists(norm):
+            return norm
+
+    return p
+
+
 @subcmd("enable|enableprofile", _common_config_opts, "[PROFILE]...")
 def enableprofilesubcmd(ui, repo, *pats, **opts) -> None:
     """enable a sparse profile"""
-
-    def normalizeprofile(p):
-        # We want a canonical path from root of repo. Check if given path is already
-        # canonical or is relative from cwd. This also normalizes path separators.
-        for maybebase in (repo.root, repo.getcwd()):
-            try:
-                norm = pathutil.canonpath(repo.root, maybebase, p)
-            except Exception:
-                continue
-            if repo.wvfs.exists(norm):
-                return norm
-
-        return p
-
-    pats = [normalizeprofile(p) for p in pats]
+    pats = [normalizeprofile(repo, p) for p in pats]
     _checknonexistingprofiles(ui, repo, pats)
     commonopts = getcommonopts(opts)
     _config(ui, repo, pats, opts, enableprofile=True, **commonopts)
@@ -2579,7 +2802,7 @@ def _refreshsubcmd(ui, repo, *pats, **opts) -> None:
         # Since we don't know the "original" sparse matcher, use the
         # always matcher so it checks everything.
         origmatcher = matchmod.always(repo.root, "")
-        c = _refresh(ui, repo, repo.status(), origmatcher, force)
+        c = repo._refreshsparse(ui, repo.status(), origmatcher, force)
         fcounts = list(map(len, c))
         _verbose_output(ui, opts, 0, 0, 0, *fcounts)
 
@@ -2632,7 +2855,9 @@ def _config(
             oldprofiles = set()
 
         try:
-            if reset:
+            # edensparse only supports a single profile being active at time.
+            # Start from scratch for every update.
+            if reset or _isedensparse(repo):
                 newinclude = set()
                 newexclude = set()
                 newprofiles = set()
@@ -2645,26 +2870,28 @@ def _config(
                 err = _("paths cannot be absolute")
                 raise error.Abort(err)
 
-            adjustpats = False
-            if include or exclude or delete or uninclude or unexclude:
-                if not ui.configbool("sparse", "includereporootpaths", False):
-                    adjustpats = True
-            if enableprofile or disableprofile:
-                if not ui.configbool("sparse", "enablereporootpaths", True):
-                    adjustpats = True
-            if adjustpats:
-                # supplied file patterns should be treated as relative
-                # to current working dir, so we need to convert them first
-                root, cwd = repo.root, repo.getcwd()
-                abspats = []
-                for kindpat in pats:
-                    kind, pat = matchmod._patsplit(kindpat, None)
-                    if kind in cwdrealtivepatkinds or kind is None:
-                        kindpat = (kind + ":" if kind else "") + pathutil.canonpath(
-                            root, cwd, pat
-                        )
-                    abspats.append(kindpat)
-                pats = abspats
+            # Edensparse doesn't support config-based adjustments
+            if not _isedensparse(repo):
+                adjustpats = False
+                if include or exclude or delete or uninclude or unexclude:
+                    if not ui.configbool("sparse", "includereporootpaths", False):
+                        adjustpats = True
+                if enableprofile or disableprofile:
+                    if not ui.configbool("sparse", "enablereporootpaths", True):
+                        adjustpats = True
+                if adjustpats:
+                    # supplied file patterns should be treated as relative
+                    # to current working dir, so we need to convert them first
+                    root, cwd = repo.root, repo.getcwd()
+                    abspats = []
+                    for kindpat in pats:
+                        kind, pat = matchmod._patsplit(kindpat, None)
+                        if kind in cwdrealtivepatkinds or kind is None:
+                            kindpat = (kind + ":" if kind else "") + pathutil.canonpath(
+                                root, cwd, pat
+                            )
+                        abspats.append(kindpat)
+                    pats = abspats
 
             oldstatus = repo.status()
             if include:
@@ -2676,7 +2903,12 @@ def _config(
             elif enableprofile:
                 newprofiles.update(pats)
             elif disableprofile:
-                newprofiles.difference_update(pats)
+                if _isedensparse(repo):
+                    # There's only 1 profile active at a time for edensparse
+                    # checkouts, so we can simply disable it
+                    newprofiles = set()
+                else:
+                    newprofiles.difference_update(pats)
             elif uninclude:
                 newinclude.difference_update(pats)
             elif unexclude:
@@ -2687,18 +2919,25 @@ def _config(
 
             repo.writesparseconfig(newinclude, newexclude, newprofiles)
 
-            fcounts = list(
-                map(len, _refresh(ui, repo, oldstatus, oldsparsematch, force))
-            )
+            if _isedensparse(repo):
+                repo._refreshsparse(ui, oldstatus, oldsparsematch, force)
+            else:
+                fcounts = list(
+                    map(len, repo._refreshsparse(ui, oldstatus, oldsparsematch, force))
+                )
 
-            profilecount = len(newprofiles - oldprofiles) - len(
-                oldprofiles - newprofiles
-            )
-            includecount = len(newinclude - oldinclude) - len(oldinclude - newinclude)
-            excludecount = len(newexclude - oldexclude) - len(oldexclude - newexclude)
-            _verbose_output(
-                ui, opts, profilecount, includecount, excludecount, *fcounts
-            )
+                profilecount = len(newprofiles - oldprofiles) - len(
+                    oldprofiles - newprofiles
+                )
+                includecount = len(newinclude - oldinclude) - len(
+                    oldinclude - newinclude
+                )
+                excludecount = len(newexclude - oldexclude) - len(
+                    oldexclude - newexclude
+                )
+                _verbose_output(
+                    ui, opts, profilecount, includecount, excludecount, *fcounts
+                )
         except Exception:
             repo.writesparseconfig(oldinclude, oldexclude, oldprofiles)
             raise
@@ -2717,7 +2956,7 @@ def _checknonexistingprofiles(ui, repo, profiles) -> None:
                     "current commit, it will only take effect "
                     "when you check out a commit containing a "
                     "profile with that name\n"
-                    "(if the path is a typo, use '@prog@ sparse disableprofile' to remove it)\n"
+                    f"(if the path is a typo, use '@prog@ {_getsparseflavor(repo)} disableprofile' to remove it)\n"
                 )
                 % p
             )
@@ -2784,7 +3023,7 @@ def _import(ui, repo, files, opts, force: bool = False) -> None:
 
             try:
                 fcounts = list(
-                    map(len, _refresh(ui, repo, oldstatus, oldsparsematch, force))
+                    map(len, repo._refreshsparse(ui, oldstatus, oldsparsematch, force))
                 )
             except Exception:
                 repo.writesparseconfig(oincludes, oexcludes, oprofiles)
@@ -2806,129 +3045,7 @@ def _clear(ui, repo, files, force: bool = False) -> None:
             oldstatus = repo.status()
             oldsparsematch = repo.sparsematch()
             repo.writesparseconfig(set(), set(), rawconfig.profiles)
-            _refresh(ui, repo, oldstatus, oldsparsematch, force)
-
-
-def _refresh(ui, repo, origstatus, origsparsematch, force):
-    """Refreshes which files are on disk by comparing the old status and
-    sparsematch with the new sparsematch.
-
-    Will raise an exception if a file with pending changes is being excluded
-    or included (unless force=True).
-    """
-    modified, added, removed, deleted, unknown, ignored, clean = origstatus
-
-    # Verify there are no pending changes
-    pending = set()
-    pending.update(modified)
-    pending.update(added)
-    pending.update(removed)
-    sparsematch = repo.sparsematch()
-    abort = False
-    if len(pending) > 0:
-        ui.note(_("verifying pending changes for refresh\n"))
-    for file in pending:
-        if not sparsematch(file):
-            ui.warn(_("pending changes to '%s'\n") % file)
-            abort = not force
-    if abort:
-        raise error.Abort(_("could not update sparseness due to pending changes"))
-
-    # Calculate actions
-    ui.note(_("calculating actions for refresh\n"))
-    with progress.spinner(ui, "populating file set"):
-        dirstate = repo.dirstate
-        ctx = repo["."]
-        added = []
-        lookup = []
-        dropped = []
-        mf = ctx.manifest()
-        # Only care about files covered by the old or the new matcher.
-        unionedmatcher = matchmod.unionmatcher([origsparsematch, sparsematch])
-        files = set(mf.walk(unionedmatcher))
-
-    actions = {}
-
-    with progress.bar(ui, _("calculating"), total=len(files)) as prog:
-        for file in files:
-            prog.value += 1
-
-            old = origsparsematch(file)
-            new = sparsematch(file)
-            # Add files that are newly included, or that don't exist in
-            # the dirstate yet.
-            if (new and not old) or (old and new and not file in dirstate):
-                fl = mf.flags(file)
-                if repo.wvfs.exists(file):
-                    actions[file] = ("e", (fl,), "")
-                    lookup.append(file)
-                else:
-                    actions[file] = ("g", (fl, False), "")
-                    added.append(file)
-            # Drop files that are newly excluded, or that still exist in
-            # the dirstate.
-            elif (old and not new) or (not (old or new) and file in dirstate):
-                dropped.append(file)
-                if file not in pending:
-                    actions[file] = ("r", [], "")
-
-    # Verify there are no pending changes in newly included files
-    if len(lookup) > 0:
-        ui.note(_("verifying no pending changes in newly included files\n"))
-    abort = False
-    for file in lookup:
-        ui.warn(_("pending changes to '%s'\n") % file)
-        abort = not force
-    if abort:
-        raise error.Abort(
-            _(
-                "cannot change sparseness due to "
-                + "pending changes (delete the files or use --force "
-                + "to bring them back dirty)"
-            )
-        )
-
-    # Check for files that were only in the dirstate.
-    for file, state in pycompat.iteritems(dirstate):
-        if not file in files:
-            old = origsparsematch(file)
-            new = sparsematch(file)
-            if old and not new:
-                dropped.append(file)
-
-    # Apply changes to disk
-    if len(actions) > 0:
-        ui.note(_("applying changes to disk (%d actions)\n") % len(actions))
-    typeactions = dict((m, []) for m in "a f g am cd dc r rg dm dg m e k p pr".split())
-
-    with progress.bar(ui, _("applying"), total=len(actions)) as prog:
-        for f, (m, args, msg) in pycompat.iteritems(actions):
-            prog.value += 1
-            if m not in typeactions:
-                typeactions[m] = []
-            typeactions[m].append((f, args, msg))
-        mergemod.applyupdates(repo, typeactions, repo[None], repo["."], False)
-
-    # Fix dirstate
-    filecount = len(added) + len(dropped) + len(lookup)
-    if filecount > 0:
-        ui.note(_("updating dirstate\n"))
-    with progress.bar(ui, _("recording"), _("files"), filecount) as prog:
-        for file in added:
-            prog.value += 1
-            dirstate.normal(file)
-
-        for file in dropped:
-            prog.value += 1
-            dirstate.untrack(file)
-
-        for file in lookup:
-            prog.value += 1
-            # File exists on disk, and we're bringing it back in an unknown
-            # state.
-            dirstate.normallookup(file)
-
-    return added, dropped, lookup
+            repo._refreshsparse(ui, oldstatus, oldsparsematch, force)
 
 
 def _verbose_output(

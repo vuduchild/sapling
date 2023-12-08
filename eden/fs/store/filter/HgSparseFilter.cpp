@@ -9,7 +9,7 @@
 #include "eden/fs/model/Hash.h"
 #include "eden/fs/service/ThriftUtil.h"
 #include "eden/fs/store/filter/Filter.h"
-#include "eden/scm/lib/edenfs_ffi/src/ffi.h"
+#include "eden/scm/lib/edenfs_ffi/include/ffi.h"
 #include "eden/scm/lib/edenfs_ffi/src/lib.rs.h" // @manual
 
 #include <folly/futures/Future.h>
@@ -36,7 +36,7 @@ FilterCoverage determineFilterCoverage(
     default:
       throwf<std::invalid_argument>(
           "Rust returned an invalid filter FilterDirectoryMatch result: {}",
-          res);
+          static_cast<uint8_t>(res));
   }
 }
 } // namespace

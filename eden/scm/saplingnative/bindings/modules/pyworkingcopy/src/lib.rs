@@ -33,6 +33,7 @@ use pypathmatcher::extract_matcher;
 use pypathmatcher::extract_option_matcher;
 use pypathmatcher::treematcher;
 use pytreestate::treestate;
+use repostate::command_state::Operation;
 use rsworkingcopy::walker::WalkError;
 use rsworkingcopy::walker::Walker;
 use rsworkingcopy::workingcopy::WorkingCopy;
@@ -42,6 +43,8 @@ use types::HgId;
 py_class!(pub class PyEdenClient |py| {
     data inner: Arc<rsworkingcopy::workingcopy::EdenFsClient>;
 });
+
+mod impl_into;
 
 pub fn init_module(py: Python, package: &str) -> PyResult<PyModule> {
     let name = [package, "workingcopy"].join(".");
@@ -55,6 +58,8 @@ pub fn init_module(py: Python, package: &str) -> PyResult<PyModule> {
         "parsegitsubmodules",
         py_fn!(py, parse_git_submodules(data: &PyBytes)),
     )?;
+
+    impl_into::register(py);
 
     Ok(m)
 }
@@ -213,6 +218,26 @@ py_class!(pub class workingcopy |py| {
         self.inner(py).read().write_merge_state(&*ms.borrow()).map_pyerr(py)?;
         Ok(PyNone)
     }
+
+    // Return repo's unfinished command state (e.g. resolving conflicts for
+    // "rebase"), if any. Return value is (<state description>, <hint for user>).
+    // `op` optionally specifies what operation you are
+    // performing (some unfinished command states allow certain operations such
+    // as "commit").
+    def commandstate(&self, op: Option<Serde<Operation>> = None) -> PyResult<Option<(String, String)>> {
+        let wc = self.inner(py).read();
+        let locked_path = wc.lock().map_pyerr(py)?;
+        let op = op.map_or(Operation::Other, |op| *op);
+        match repostate::command_state::try_operation(&locked_path, op) {
+            Ok(()) => Ok(None),
+            Err(err) => {
+                if let Some(conflict) = err.downcast_ref::<repostate::command_state::Conflict>() {
+                    return Ok(Some((conflict.description().to_string(), conflict.hint())));
+                }
+                Err(err).map_pyerr(py)
+            },
+        }
+    }
 });
 
 py_class!(pub class mergestate |py| {
@@ -309,6 +334,12 @@ impl ExtractInnerRef for mergestate {
 
     fn extract_inner_ref<'a>(&'a self, py: Python<'a>) -> &'a Self::Inner {
         self.ms(py)
+    }
+}
+
+impl workingcopy {
+    pub fn get_wc(&self, py: Python) -> Arc<RwLock<WorkingCopy>> {
+        self.inner(py).clone()
     }
 }
 

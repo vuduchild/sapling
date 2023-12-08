@@ -9,15 +9,28 @@ rust_library(
         "cargo_toml_config": {
             "dependencies_override": {
                 "dependencies": {
+                    "async-runtime": {"optional": True},
+                    "edenfs-client": {"optional": True},
+                    "hg-metrics": {"optional": True},
                     "manifest": {"features": ["for-tests"]},
+                    "toml": {"optional": True},
                 },
                 "dev-dependencies": {
                     "manifest-tree": {"features": ["for-tests"]},
                 },
             },
+            "features": {
+                "eden": [
+                    "async-runtime",
+                    "edenfs-client",
+                    "hg-metrics",
+                    "toml",
+                ],
+            },
         },
     },
     crate_root = "src/lib.rs",
+    features = ["eden"],
     os_deps = [
         (
             "windows",
@@ -42,8 +55,12 @@ rust_library(
         "fbsource//third-party/rust:parking_lot",
         "fbsource//third-party/rust:serde_json",
         "fbsource//third-party/rust:thiserror",
+        "fbsource//third-party/rust:toml",
         "fbsource//third-party/rust:tracing",
+        "//eden/scm/lib/async-runtime:async-runtime",
         "//eden/scm/lib/config/model:configmodel",
+        "//eden/scm/lib/edenfs-client:edenfs-client",
+        "//eden/scm/lib/hg-metrics:hg-metrics",
         "//eden/scm/lib/io:io",
         "//eden/scm/lib/manifest:manifest",
         "//eden/scm/lib/manifest-tree:manifest-tree",
@@ -52,6 +69,7 @@ rust_library(
         "//eden/scm/lib/progress/model:progress-model",
         "//eden/scm/lib/repo:repo",
         "//eden/scm/lib/repolock:repolock",
+        "//eden/scm/lib/spawn-ext:spawn-ext",
         "//eden/scm/lib/status:status",
         "//eden/scm/lib/storemodel:storemodel",
         "//eden/scm/lib/treestate:treestate",

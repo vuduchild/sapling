@@ -26,12 +26,18 @@ use mercurial_types::HgFileEnvelope;
 use mercurial_types::HgManifestEnvelope;
 use mononoke_types::basename_suffix_skeleton_manifest::BasenameSuffixSkeletonManifest;
 use mononoke_types::basename_suffix_skeleton_manifest::BssmEntry;
+use mononoke_types::basename_suffix_skeleton_manifest_v3::BssmV3Directory;
+use mononoke_types::basename_suffix_skeleton_manifest_v3::BssmV3Entry;
 use mononoke_types::blame_v2::BlameV2;
 use mononoke_types::deleted_manifest_v2::DeletedManifestV2;
 use mononoke_types::fastlog_batch::FastlogBatch;
 use mononoke_types::fsnode::Fsnode;
 use mononoke_types::sharded_map::ShardedMapNode;
+use mononoke_types::sharded_map_v2::ShardedMapV2Node;
 use mononoke_types::skeleton_manifest::SkeletonManifest;
+use mononoke_types::test_manifest::TestManifest;
+use mononoke_types::test_sharded_manifest::TestShardedManifest;
+use mononoke_types::test_sharded_manifest::TestShardedManifestEntry;
 use mononoke_types::typed_hash::DeletedManifestV2Id;
 use mononoke_types::unode::FileUnode;
 use mononoke_types::unode::ManifestUnode;
@@ -87,7 +93,12 @@ pub enum DecodeAs {
     BlameV2,
     BasenameSuffixSkeletonManifestMapNode,
     BasenameSuffixSkeletonManifest,
+    BasenameSuffixSkeletonManifestV3MapNode,
+    BasenameSuffixSkeletonManifestV3,
     ChangesetInfo,
+    TestManifest,
+    TestShardedManifest,
+    TestShardedManifestMapNode,
 }
 
 impl DecodeAs {
@@ -122,6 +133,17 @@ impl DecodeAs {
                     DecodeAs::BasenameSuffixSkeletonManifestMapNode,
                 ),
                 ("bssm.", DecodeAs::BasenameSuffixSkeletonManifest),
+                (
+                    "bssm3.map2node.",
+                    DecodeAs::BasenameSuffixSkeletonManifestV3MapNode,
+                ),
+                ("bssm3.", DecodeAs::BasenameSuffixSkeletonManifestV3),
+                ("testmanifest.", DecodeAs::TestManifest),
+                (
+                    "testshardedmanifest.map2node.",
+                    DecodeAs::TestShardedManifestMapNode,
+                ),
+                ("testshardedmanifest.", DecodeAs::TestShardedManifest),
                 ("changeset_info.", DecodeAs::ChangesetInfo),
             ] {
                 if key[index..].starts_with(prefix) {
@@ -214,8 +236,25 @@ fn decode(key: &str, data: BlobstoreGetData, mut decode_as: DecodeAs) -> Decoded
                 &data.into_raw_bytes(),
             ))
         }
+        DecodeAs::BasenameSuffixSkeletonManifestV3 => {
+            Decoded::try_debug(BssmV3Directory::from_bytes(&data.into_raw_bytes()))
+        }
+        DecodeAs::BasenameSuffixSkeletonManifestV3MapNode => Decoded::try_debug(
+            ShardedMapV2Node::<BssmV3Entry>::from_bytes(&data.into_raw_bytes()),
+        ),
         DecodeAs::ChangesetInfo => {
             Decoded::try_debug(ChangesetInfo::from_bytes(&data.into_raw_bytes()))
+        }
+        DecodeAs::TestManifest => {
+            Decoded::try_debug(TestManifest::from_bytes(&data.into_raw_bytes()))
+        }
+        DecodeAs::TestShardedManifest => {
+            Decoded::try_debug(TestShardedManifest::from_bytes(&data.into_raw_bytes()))
+        }
+        DecodeAs::TestShardedManifestMapNode => {
+            Decoded::try_debug(ShardedMapV2Node::<TestShardedManifestEntry>::from_bytes(
+                &data.into_raw_bytes(),
+            ))
         }
     }
 }

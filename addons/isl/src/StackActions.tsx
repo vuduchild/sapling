@@ -5,15 +5,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import type {UICodeReviewProvider} from './codeReview/UICodeReviewProvider';
-import type {DiffSummary, CommitInfo, Hash} from './types';
+import type {Hash} from './types';
 
 import {globalRecoil} from './AccessGlobalRecoil';
+import {CleanupButton, isStackEligibleForCleanup} from './Cleanup';
 import {FlexRow} from './ComponentUtils';
 import {shouldShowSubmitStackConfirmation, useShowConfirmSubmitStack} from './ConfirmSubmitStack';
 import {HighlightCommitsWhileHovering} from './HighlightedCommits';
 import {OperationDisabledButton} from './OperationDisabledButton';
-import {latestSuccessorUnlessExplicitlyObsolete} from './SuccessionTracker';
 import {showSuggestedRebaseForStack, SuggestedRebaseButton} from './SuggestedRebase';
 import {Tooltip, DOCUMENTATION_DELAY} from './Tooltip';
 import {codeReviewProvider, allDiffSummaries} from './codeReview/CodeReviewInfo';
@@ -21,16 +20,17 @@ import {SyncStatus, syncStatusAtom} from './codeReview/syncStatus';
 import {type CommitTreeWithPreviews, walkTreePostorder, isTreeLinear} from './getCommitTree';
 import {T, t} from './i18n';
 import {IconStack} from './icons/IconStack';
-import {HideOperation} from './operations/HideOperation';
+import {dagWithPreviews} from './previews';
 import {useRunOperation, latestUncommittedChangesData} from './serverAPIState';
 import {useConfirmUnsavedEditsBeforeSplit} from './stackEdit/ui/ConfirmUnsavedEditsBeforeSplit';
 import {StackEditIcon} from './stackEdit/ui/StackEditIcon';
 import {editingStackIntentionHashes, loadingStackState} from './stackEdit/ui/stackEditState';
+import {succeedableRevset} from './types';
 import {VSCodeButton} from '@vscode/webview-ui-toolkit/react';
 import {useRecoilValue, useRecoilState} from 'recoil';
 import {type ContextMenuItem, useContextMenu} from 'shared/ContextMenu';
 import {Icon} from 'shared/Icon';
-import {generatorContains, unwrap} from 'shared/utils';
+import {generatorContains} from 'shared/utils';
 
 import './StackActions.css';
 
@@ -44,6 +44,7 @@ export function StackActions({tree}: {tree: CommitTreeWithPreviews}): React.Reac
   const stackHashes = useRecoilValue(editingStackIntentionHashes)[1];
   const loadingState = useRecoilValue(loadingStackState);
   const suggestedRebase = useRecoilValue(showSuggestedRebaseForStack(tree.info.hash));
+  const dag = useRecoilValue(dagWithPreviews);
   const runOperation = useRunOperation();
   const syncStatusMap = useRecoilValue(syncStatusAtom);
 
@@ -61,7 +62,7 @@ export function StackActions({tree}: {tree: CommitTreeWithPreviews}): React.Reac
   const showCleanupButton =
     reviewProvider == null || diffMap?.value == null
       ? false
-      : isStackEligibleForCleanup(tree, diffMap.value, reviewProvider);
+      : isStackEligibleForCleanup(tree.info.hash, dag, diffMap.value, reviewProvider);
 
   const confirmShouldSubmit = useShowConfirmSubmitStack();
   const contextMenu = useContextMenu(() => moreActions);
@@ -224,7 +225,9 @@ export function StackActions({tree}: {tree: CommitTreeWithPreviews}): React.Reac
     );
     // cleanup button implies no need to rebase this stack
   } else if (suggestedRebase) {
-    actions.push(<SuggestedRebaseButton key="suggested-rebase" stackBaseHash={tree.info.hash} />);
+    actions.push(
+      <SuggestedRebaseButton key="suggested-rebase" source={succeedableRevset(tree.info.hash)} />,
+    );
   }
 
   if (actions.length === 0) {
@@ -241,52 +244,6 @@ export function StackActions({tree}: {tree: CommitTreeWithPreviews}): React.Reac
       {actions}
       {moreActionsButton}
     </div>
-  );
-}
-
-function isStackEligibleForCleanup(
-  tree: CommitTreeWithPreviews,
-  diffMap: Map<string, DiffSummary>,
-  provider: UICodeReviewProvider,
-): boolean {
-  if (
-    tree.info.diffId == null ||
-    tree.info.isHead || // don't allow hiding a stack you're checked out on
-    diffMap.get(tree.info.diffId) == null ||
-    !provider.isDiffEligibleForCleanup(unwrap(diffMap.get(tree.info.diffId)))
-  ) {
-    return false;
-  }
-
-  // any child not eligible -> don't show
-  for (const subtree of tree.children) {
-    if (!isStackEligibleForCleanup(subtree, diffMap, provider)) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function CleanupButton({commit, hasChildren}: {commit: CommitInfo; hasChildren: boolean}) {
-  const runOperation = useRunOperation();
-  return (
-    <Tooltip
-      title={
-        hasChildren
-          ? t('You can safely "clean up" by hiding this stack of commits.')
-          : t('You can safely "clean up" by hiding this commit.')
-      }
-      placement="bottom">
-      <VSCodeButton
-        appearance="icon"
-        onClick={() => {
-          runOperation(new HideOperation(latestSuccessorUnlessExplicitlyObsolete(commit)));
-        }}>
-        <Icon icon="eye-closed" slot="start" />
-        {hasChildren ? <T>Clean up stack</T> : <T>Clean up</T>}
-      </VSCodeButton>
-    </Tooltip>
   );
 }
 

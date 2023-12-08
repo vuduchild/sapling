@@ -5,16 +5,19 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import type {CommitInfo, Hash} from './types';
+import type {CommitInfo, ExactRevset, Hash, SucceedableRevset} from './types';
 
+import {globalRecoil} from './AccessGlobalRecoil';
 import {Subtle} from './Subtle';
 import {tracker} from './analytics';
 import {findCurrentPublicBase} from './getCommitTree';
 import {T, t} from './i18n';
+import {BulkRebaseOperation} from './operations/BulkRebaseOperation';
+import {RebaseAllDraftCommitsOperation} from './operations/RebaseAllDraftCommitsOperation';
 import {RebaseOperation} from './operations/RebaseOperation';
-import {treeWithPreviews} from './previews';
+import {dagWithPreviews} from './previews';
 import {RelativeDate} from './relativeDate';
-import {latestCommits, useRunOperation} from './serverAPIState';
+import {commitsShownRange, latestCommits, useRunOperation} from './serverAPIState';
 import {succeedableRevset} from './types';
 import {short} from './utils';
 import {VSCodeButton} from '@vscode/webview-ui-toolkit/react';
@@ -33,13 +36,13 @@ export const showSuggestedRebaseForStack = selectorFamily<boolean, Hash>({
   get:
     (hash: Hash) =>
     ({get}) => {
-      const tree = get(treeWithPreviews);
-      const commit = tree.treeMap.get(hash);
+      const dag = get(dagWithPreviews);
+      const commit = dag.get(hash);
       if (commit == null) {
         return false;
       }
-      const parentHash = commit.info.parents[0];
-      const stackBase = tree.treeMap.get(parentHash)?.info;
+      const parentHash = commit.parents.at(0);
+      const stackBase = dag.get(parentHash);
       if (stackBase == null) {
         return false;
       }
@@ -57,7 +60,7 @@ export const suggestedRebaseDestinations = selector<Array<[CommitInfo, string]>>
   key: 'suggestedRebaseDestinations',
   get: ({get}) => {
     const commits = get(latestCommits);
-    const publicBase = findCurrentPublicBase(get(treeWithPreviews));
+    const publicBase = findCurrentPublicBase(get(dagWithPreviews));
     const destinations = commits
       .filter(
         commit =>
@@ -82,19 +85,36 @@ export const suggestedRebaseDestinations = selector<Array<[CommitInfo, string]>>
     }
     destinations.sort((a, b) => b[0].date.valueOf() - a[0].date.valueOf());
 
-    // TODO: we could make the current stack you're based on an option here,
-    // to allow rebasing other stacks to the same place as your current stack.
-    // Might be unnecessary given we support stableCommitMetadata.
-
     return destinations;
   },
 });
 
-export function SuggestedRebaseButton({stackBaseHash}: {stackBaseHash: Hash}) {
+export function SuggestedRebaseButton({
+  source,
+  sources,
+  afterRun,
+}:
+  | {
+      source: SucceedableRevset | ExactRevset;
+      sources?: undefined;
+      afterRun?: () => unknown;
+    }
+  | {
+      source?: undefined;
+      sources: Array<SucceedableRevset>;
+      afterRun?: () => unknown;
+    }
+  | {
+      source?: undefined;
+      sources?: undefined;
+      afterRun?: () => unknown;
+    }) {
   const validDestinations = useRecoilCallback(({snapshot}) => () => {
     return snapshot.getLoadable(suggestedRebaseDestinations).valueMaybe();
   });
   const runOperation = useRunOperation();
+  const isBulk = source == null;
+  const isAllDraftCommits = sources == null && source == null;
   const showContextMenu = useContextMenu(() => {
     const destinations = validDestinations();
     return (
@@ -110,19 +130,36 @@ export function SuggestedRebaseButton({stackBaseHash}: {stackBaseHash: Hash}) {
           ),
           onClick: () => {
             const destination = dest.remoteBookmarks?.[0] ?? dest.hash;
-            tracker.track('ClickSuggestedRebase', {extras: {destination}});
+            tracker.track('ClickSuggestedRebase', {
+              extras: {destination, isBulk},
+            });
+
             runOperation(
-              new RebaseOperation(succeedableRevset(stackBaseHash), succeedableRevset(destination)),
+              source != null
+                ? new RebaseOperation(source, succeedableRevset(destination))
+                : sources != null
+                ? new BulkRebaseOperation(sources, succeedableRevset(destination))
+                : new RebaseAllDraftCommitsOperation(
+                    globalRecoil().getLoadable(commitsShownRange).valueMaybe(),
+                    succeedableRevset(destination),
+                  ),
             );
+            afterRun?.();
           },
         };
       }) ?? []
     );
   });
   return (
-    <VSCodeButton appearance="icon" onClick={showContextMenu}>
+    <VSCodeButton appearance={isBulk ? 'secondary' : 'icon'} onClick={showContextMenu}>
       <Icon icon="git-pull-request" slot="start" />
-      <T>Rebase onto&hellip;</T>
+      {isAllDraftCommits ? (
+        <T>Rebase all onto&hellip;</T>
+      ) : isBulk ? (
+        <T>Rebase selected commits onto...</T>
+      ) : (
+        <T>Rebase onto&hellip;</T>
+      )}
     </VSCodeButton>
   );
 }

@@ -367,6 +367,8 @@ class localrepository:
         "lfs",
         # enable symlinks on Windows
         "windowssymlinks",
+        # allows sparse eden (filteredfs) checkouts
+        "edensparse",
     }
     _basestoresupported = {
         "visibleheads",
@@ -1012,12 +1014,16 @@ class localrepository:
         headnames=(),
         quiet=True,
         visible=True,
+        remotebookmarks=None,
     ):
         """Pull specified revisions and remote bookmarks.
 
-        headnodes is a list of binary nodes to pull.
-        headnames is a list of text names (ex. hex prefix of a commit hash).
-        bookmarknames is a list of bookmark names to pull.
+        - headnodes is a list of binary nodes to pull.
+        - headnames is a list of text names (ex. hex prefix of a commit hash).
+        - bookmarknames is a list of bookmark names to pull.
+        - remotebookmarks is a map of {bookmark: node}. Instead of fetching the
+          new nodes of those remote bookmarks from server, we just use the value
+          from this map.
 
         visible=False can disable updating visible heads. This means the pulled
         commit hashes will not be visible, although bookmarks are still updated.
@@ -1090,22 +1096,37 @@ class localrepository:
 
             # Resolve the bookmark names to heads.
             if bookmarknames:
-                if (
-                    self.ui.configbool("pull", "httpbookmarks")
-                    and self.nullableedenapi is not None
-                ):
-                    fetchedbookmarks = self.edenapi.bookmarks(list(bookmarknames))
-                    tracing.debug(
-                        "edenapi fetched bookmarks: %s" % str(fetchedbookmarks),
-                        target="pull::httpbookmarks",
-                    )
-                    remotebookmarks = {
-                        bm: n for (bm, n) in fetchedbookmarks.items() if n is not None
-                    }
-                else:
-                    remotebookmarks = remote.listkeyspatterns(
-                        "bookmarks", patterns=list(bookmarknames)
-                    )  # {name: hexnode}
+                # Convert nodes to hexnodes, so it matches the return type of bookmarks
+                # api calls below
+                remotebookmarks = {
+                    b: hex(n) for b, n in (remotebookmarks or {}).items()
+                }
+                missing_bookmarknames = [
+                    b for b in bookmarknames if b not in remotebookmarks
+                ]
+                if missing_bookmarknames:
+                    if (
+                        self.ui.configbool("pull", "httpbookmarks")
+                        and self.nullableedenapi is not None
+                    ):
+                        fetchedbookmarks = self.edenapi.bookmarks(missing_bookmarknames)
+                        tracing.debug(
+                            "edenapi fetched bookmarks: %s" % str(fetchedbookmarks),
+                            target="pull::httpbookmarks",
+                        )
+                        remotebookmarks.update(
+                            {
+                                bm: n
+                                for (bm, n) in fetchedbookmarks.items()
+                                if n is not None
+                            }
+                        )
+                    else:
+                        remotebookmarks.update(
+                            remote.listkeyspatterns(
+                                "bookmarks", patterns=missing_bookmarknames
+                            )
+                        )  # {name: hexnode}
 
                 for name in bookmarknames:
                     if name in remotebookmarks:
@@ -1178,23 +1199,14 @@ class localrepository:
             fastpathcommits, fastpathsegments, fastpathfallbacks = 0, 0, 0
             for (old, new) in fastpath:
                 try:
-                    fastpulldata = self.edenapi.pullfastforwardmaster(old, new)
-                except Exception as e:
-                    self.ui.status_err(
-                        _("failed to get fast pull data (%s), using fallback path\n")
-                        % (e,)
+                    commits, segments = bindings.exchange.fastpull(
+                        self.ui._rcfg,
+                        self.edenapi,
+                        self.changelog.inner,
+                        [old],
+                        [new],
                     )
-                    fastpathfallbacks += 1
-                    continue
-                vertexopts = {
-                    "reserve_size": 0,
-                    "highest_group": 0,
-                }
-                try:
-                    commits, segments = self.changelog.inner.importpulldata(
-                        fastpulldata,
-                        [(new, vertexopts)],
-                    )
+
                     self.ui.status(
                         _("imported commit graph for %s (%s)\n")
                         % (
@@ -1214,6 +1226,12 @@ class localrepository:
                     tracing.warn(
                         "cannot use pull fast path: %s\n" % e, target="pull::fastpath"
                     )
+                except Exception as e:
+                    self.ui.status_err(
+                        _("failed to get fast pull data (%s), using fallback path\n")
+                        % (e,)
+                    )
+                    fastpathfallbacks += 1
 
             pullheads = heads - fastpathheads
 
@@ -2784,6 +2802,26 @@ class localrepository:
                     _("commit extras total size (%s) exceeds configured limit (%s)")
                     % (extraslen, extraslimit)
                 )
+
+        file_count_limit = self.ui.configint("commit", "file-count-limit")
+        if file_count_limit and file_count_limit < len(ctx.files()):
+            support = self.ui.config("ui", "supportcontact")
+            if support:
+                hint = (
+                    _(
+                        "contact %s for help or use '--config commit.file-count-limit=N' cautiously to override"
+                    )
+                    % support
+                )
+            else:
+                hint = _(
+                    "use '--config commit.file-count-limit=N' cautiously to override"
+                )
+            raise errormod.Abort(
+                _("commit file count (%d) exceeds configured limit (%d)")
+                % (len(ctx.files()), file_count_limit),
+                hint=hint,
+            )
 
         isgit = git.isgitformat(self)
         lock = self.lock()

@@ -1,4 +1,5 @@
 load("@fbcode_macros//build_defs:rust_library.bzl", "rust_library")
+load("@fbcode_macros//build_defs:rust_unittest.bzl", "rust_unittest")
 
 oncall("mercurial_release")
 
@@ -29,6 +30,7 @@ rust_library(
             },
             "features": {
                 "configurable": ["configmodel"],
+                "sigbus-handler": [],
             },
             "package": {
                 "license": "MIT",
@@ -36,7 +38,10 @@ rust_library(
         },
     },
     crate_root = "src/lib.rs",
-    features = ["configurable"],
+    features = [
+        "configurable",
+        "sigbus-handler",
+    ],
     os_deps = [
         (
             "linux",
@@ -81,5 +86,29 @@ rust_library(
         "//eden/scm/lib/config/model:configmodel",
         "//eden/scm/lib/minibytes:minibytes",
         "//eden/scm/lib/vlqencoding:vlqencoding",
+    ],
+)
+
+rust_unittest(
+    name = "low_fileno_limit_test",
+    srcs = ["tests/low_fileno_limit.rs"],
+    crate_root = "tests/low_fileno_limit.rs",
+    os_deps = [
+        (
+            "linux",
+            [
+                "fbsource//third-party/rust:libc",
+                "fbsource//third-party/rust:tempfile",
+                ":indexedlog",
+            ],
+        ),
+        (
+            "macos",
+            [
+                "fbsource//third-party/rust:libc",
+                "fbsource//third-party/rust:tempfile",
+                ":indexedlog",
+            ],
+        ),
     ],
 )

@@ -309,14 +309,13 @@ Test extension help:
        disablesymlinks
                      disables symlink support when enabled
        drop          drop specified changeset from the stack
+       edensparse    allow sparse EdenFS checkouts
        extdiff       command to allow external programs to compare revisions
        extorder
        extutil       (no help text available)
        fastlog
        fbcodereview  integration with Meta internal code review systems
        fbhistedit    extends the existing histedit functionality
-       generic_bisect
-                     (no help text available)
        gitrevset     map a git hash to a Mercurial hash:
        globalrevs    extension for providing strictly increasing revision
                      numbers

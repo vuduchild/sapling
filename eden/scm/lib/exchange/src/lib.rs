@@ -10,10 +10,12 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_runtime::block_unless_interrupted as block_on;
-use dag::CloneData;
+use dag::Group;
+use dag::VertexListWithOptions;
 use dag::VertexName;
 use edenapi::configmodel::Config;
 use edenapi::configmodel::ConfigExt;
+use edenapi::types::CommitGraphSegments;
 use edenapi::EdenApi;
 use hgcommits::DagCommits;
 use metalog::CommitOptions;
@@ -30,7 +32,7 @@ pub fn convert_to_remote(config: &dyn Config, bookmark: &str) -> Result<String> 
     ))
 }
 
-/// Download commit data via lazy pull endpoint. Returns hash of bookmarks, if any.
+/// Download initial commit data via fast pull endpoint. Returns hash of bookmarks, if any.
 #[instrument(skip_all, fields(?bookmarks))]
 pub fn clone(
     config: &dyn Config,
@@ -46,17 +48,16 @@ pub fn clone(
         .collect::<BTreeMap<String, HgId>>();
 
     let heads = bookmarks.values().cloned().collect();
-    let clone_data = block_on(edenapi.pull_lazy(vec![], heads))?.map_err(|e| e.tag_network())?;
-    let idmap: BTreeMap<_, _> = clone_data
-        .idmap
-        .into_iter()
-        .map(|(k, v)| (k, VertexName::copy_from(&v.into_byte_array())))
-        .collect();
-    let vertex_clone_data = CloneData {
-        flat_segments: clone_data.flat_segments,
-        idmap,
+    let clone_data = if config.get_or_default::<bool>("clone", "use-commit-graph")? {
+        let segments =
+            block_on(edenapi.commit_graph_segments(heads, vec![]))?.map_err(|e| e.tag_network())?;
+        CommitGraphSegments { segments }.try_into()?
+    } else {
+        block_on(edenapi.pull_lazy(vec![], heads))?
+            .map_err(|e| e.tag_network())?
+            .convert_vertex(|n| VertexName::copy_from(&n.into_byte_array()))
     };
-    block_on(commits.import_clone_data(vertex_clone_data))??;
+    block_on(commits.import_clone_data(clone_data))??;
 
     let all = block_on(commits.all())??;
     let tip = block_on(all.first())??;
@@ -75,4 +76,36 @@ pub fn clone(
     metalog.commit(CommitOptions::default())?;
 
     Ok(bookmarks)
+}
+
+/// Download an update of the main bookmark via fast pull endpoint.  Returns
+/// the number of commits and segments downloaded
+#[instrument(skip_all)]
+pub fn fast_pull(
+    config: &dyn Config,
+    edenapi: Arc<dyn EdenApi>,
+    commits: &mut Box<dyn DagCommits + Send + 'static>,
+    common: Vec<HgId>,
+    missing: Vec<HgId>,
+) -> Result<(u64, u64)> {
+    let missing_vertexes = missing
+        .iter()
+        .map(|id| VertexName::copy_from(&id.into_byte_array()))
+        .collect::<Vec<_>>();
+    let pull_data = if config.get_or_default::<bool>("pull", "use-commit-graph")? {
+        let segments = block_on(edenapi.commit_graph_segments(missing, common))?
+            .map_err(|e| e.tag_network())?;
+        CommitGraphSegments { segments }.try_into()?
+    } else {
+        block_on(edenapi.pull_lazy(common, missing))?
+            .map_err(|e| e.tag_network())?
+            .convert_vertex(|n| VertexName::copy_from(&n.into_byte_array()))
+    };
+    let commit_count = pull_data.flat_segments.vertex_count();
+    let segment_count = pull_data.flat_segments.segment_count();
+    block_on(commits.import_pull_data(
+        pull_data,
+        &VertexListWithOptions::from(missing_vertexes).with_highest_group(Group::MASTER),
+    ))??;
+    Ok((commit_count, segment_count as u64))
 }

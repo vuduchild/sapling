@@ -26,6 +26,8 @@ use edenapi::types::make_hash_lookup_request;
 use edenapi::types::AnyFileContentId;
 use edenapi::types::BookmarkEntry;
 use edenapi::types::CommitGraphEntry;
+use edenapi::types::CommitGraphSegments;
+use edenapi::types::CommitGraphSegmentsEntry;
 use edenapi::types::CommitHashLookupResponse;
 use edenapi::types::CommitHashToLocationResponse;
 use edenapi::types::CommitKnownResponse;
@@ -69,6 +71,16 @@ use tracing::trace;
 
 use crate::EagerRepo;
 
+impl EagerRepo {
+    /// Load file/tree store changes from disk.
+    ///
+    /// This is intended to be used by EdenApi impls so content fetched
+    /// via EdenApi (during testing) is always fresh.
+    pub(crate) fn refresh_for_api(&self) {
+        let _ = self.store.flush();
+    }
+}
+
 #[async_trait::async_trait]
 impl EdenApi for EagerRepo {
     fn url(&self) -> Option<String> {
@@ -80,11 +92,15 @@ impl EdenApi for EagerRepo {
     }
 
     async fn capabilities(&self) -> Result<Vec<String>, EdenApiError> {
-        Ok(vec!["segmented-changelog".to_string()])
+        Ok(vec![
+            "segmented-changelog".to_string(),
+            "commit-graph-segments".to_string(),
+        ])
     }
 
     async fn files(&self, keys: Vec<Key>) -> edenapi::Result<Response<FileResponse>> {
         debug!("files {}", debug_key_list(&keys));
+        self.refresh_for_api();
         let mut values = Vec::with_capacity(keys.len());
         for key in keys {
             let id = key.hgid;
@@ -112,6 +128,7 @@ impl EdenApi for EagerRepo {
 
     async fn files_attrs(&self, reqs: Vec<FileSpec>) -> edenapi::Result<Response<FileResponse>> {
         debug!("files {}", debug_spec_list(&reqs));
+        self.refresh_for_api();
         let mut values = Vec::with_capacity(reqs.len());
         for spec in reqs {
             let key = spec.key;
@@ -145,6 +162,7 @@ impl EdenApi for EagerRepo {
         _length: Option<u32>,
     ) -> edenapi::Result<Response<HistoryEntry>> {
         debug!("history {}", debug_key_list(&keys));
+        self.refresh_for_api();
         let mut values = Vec::new();
         let mut visited: HashSet<Key> = Default::default();
         let mut to_visit: Vec<Key> = keys;
@@ -195,6 +213,7 @@ impl EdenApi for EagerRepo {
         attributes: Option<TreeAttributes>,
     ) -> edenapi::Result<Response<Result<TreeEntry, edenapi::types::EdenApiServerError>>> {
         debug!("trees {}", debug_key_list(&keys));
+        self.refresh_for_api();
         let mut values = Vec::new();
         let attributes = attributes.unwrap_or_default();
         if attributes.child_metadata {
@@ -227,6 +246,7 @@ impl EdenApi for EagerRepo {
         hgids: Vec<HgId>,
     ) -> edenapi::Result<Response<CommitRevlogData>> {
         debug!("revlog_data {}", debug_hgid_list(&hgids));
+        self.refresh_for_api();
         let mut values = Vec::new();
         for id in hgids {
             let data = self.get_sha1_blob_for_api(id, "commit_revlog_data")?;
@@ -384,10 +404,8 @@ impl EdenApi for EagerRepo {
             debug_hgid_list(&heads),
             debug_hgid_list(&common),
         );
-        let heads =
-            dag::Set::from_static_names(heads.iter().map(|v| Vertex::copy_from(v.as_ref())));
-        let common =
-            dag::Set::from_static_names(common.iter().map(|v| Vertex::copy_from(v.as_ref())));
+        let heads = Set::from_static_names(heads.iter().map(|v| Vertex::copy_from(v.as_ref())));
+        let common = Set::from_static_names(common.iter().map(|v| Vertex::copy_from(v.as_ref())));
         let graph = self.dag().only(heads, common).await.map_err(map_dag_err)?;
         let stream = graph.iter_rev().await.map_err(map_dag_err)?;
         let stream: BoxStream<edenapi::Result<CommitGraphEntry>> = stream
@@ -410,6 +428,34 @@ impl EdenApi for EagerRepo {
             .boxed();
         let values: edenapi::Result<Vec<CommitGraphEntry>> = stream.try_collect().await;
         values
+    }
+
+    async fn commit_graph_segments(
+        &self,
+        heads: Vec<HgId>,
+        common: Vec<HgId>,
+    ) -> Result<Vec<CommitGraphSegmentsEntry>, EdenApiError> {
+        ::fail::fail_point!("eagerepo::api::commitgraphsegments", |_| {
+            Err(EdenApiError::NotSupported)
+        });
+
+        debug!(
+            "commit_graph_segments {} {}",
+            debug_hgid_list(&heads),
+            debug_hgid_list(&common),
+        );
+        let heads = Set::from_static_names(heads.iter().map(|v| Vertex::copy_from(v.as_ref())));
+        let common = Set::from_static_names(common.iter().map(|v| Vertex::copy_from(v.as_ref())));
+        let graph = self.dag().only(heads, common).await.map_err(map_dag_err)?;
+
+        let graph_segments: CommitGraphSegments = self
+            .dag()
+            .export_pull_data(&graph)
+            .await
+            .map_err(map_dag_err)?
+            .try_into()?;
+
+        Ok(graph_segments.segments)
     }
 
     async fn bookmarks(&self, bookmarks: Vec<String>) -> edenapi::Result<Vec<BookmarkEntry>> {

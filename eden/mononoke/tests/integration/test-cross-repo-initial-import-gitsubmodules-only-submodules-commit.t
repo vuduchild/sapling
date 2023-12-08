@@ -28,53 +28,28 @@ Create commit that modifies git submodule in small repo
   B=b51882d566acc1f3979a389e452e2c11ccdd05be65bf777c05924fc412b2cc71
   C=6473a332b6f2c52543365108144f9b1cff6b4874bc3ade72a8268f50226f86f4
 
-  $ with_stripped_logs mononoke_x_repo_sync "$SMALL_REPO_ID"  "$LARGE_REPO_ID" initial-import --commit "$C" --version-name "$LATEST_CONFIG_VERSION_NAME" --new-bookmark "$NEW_BOOKMARK_NAME"
-  using repo "small_repo" repoid RepositoryId(1)
-  using repo "large_repo" repoid RepositoryId(0)
-  using repo "small_repo" repoid RepositoryId(1)
-  using repo "large_repo" repoid RepositoryId(0)
-  changeset resolved as: ChangesetId(Blake2(6473a332b6f2c52543365108144f9b1cff6b4874bc3ade72a8268f50226f86f4))
+  $ with_stripped_logs mononoke_x_repo_sync "$SMALL_REPO_ID"  "$LARGE_REPO_ID" initial-import -i "$C" --version-name "$LATEST_CONFIG_VERSION_NAME"
   Checking if 6473a332b6f2c52543365108144f9b1cff6b4874bc3ade72a8268f50226f86f4 is already synced 1->0
   syncing 6473a332b6f2c52543365108144f9b1cff6b4874bc3ade72a8268f50226f86f4
-  Setting bookmark SYNCED_HEAD to changeset 5cac851d3a164f682613d6901e17a03e18afe8576145d4f5ff9dd0a51a82437f
   changeset 6473a332b6f2c52543365108144f9b1cff6b4874bc3ade72a8268f50226f86f4 synced as 5cac851d3a164f682613d6901e17a03e18afe8576145d4f5ff9dd0a51a82437f in * (glob)
-  successful sync
+  successful sync of head 6473a332b6f2c52543365108144f9b1cff6b4874bc3ade72a8268f50226f86f4
 
-
-
-  $ clone_and_log_large_repo "$NEW_BOOKMARK_NAME" "$C"
-  commit:      f9abb21ba833
-  bookmark:    SYNCED_HEAD
-  user:        author
-  date:        Thu Jan 01 00:00:00 1970 +0000
-  summary:     C
-  
-   smallrepofolder1/foo/b.txt |  1 +
-   1 files changed, 1 insertions(+), 0 deletions(-)
-  
-  commit:      039696fd865f
-  user:        author
-  date:        Thu Jan 01 00:00:00 1970 +0000
-  summary:     B
-  
-  
-  commit:      e462fc947f26
-  user:        author
-  date:        Thu Jan 01 00:00:00 1970 +0000
-  summary:     A
-  
-   smallrepofolder1/bar/b.txt |  1 +
-   smallrepofolder1/foo/a.txt |  1 +
-   2 files changed, 2 insertions(+), 0 deletions(-)
+  $ clone_and_log_large_repo 5cac851d3a164f682613d6901e17a03e18afe8576145d4f5ff9dd0a51a82437f
+  o  f9abb21ba833 C
+  │   smallrepofolder1/foo/b.txt |  1 +
+  │   1 files changed, 1 insertions(+), 0 deletions(-)
+  │
+  o  039696fd865f B
+  │
+  o  e462fc947f26 A
+      smallrepofolder1/bar/b.txt |  1 +
+      smallrepofolder1/foo/a.txt |  1 +
+      2 files changed, 2 insertions(+), 0 deletions(-)
   
   
   
   Running mononoke_admin to verify mapping
   
-  using repo "small_repo" repoid RepositoryId(1)
-  using repo "large_repo" repoid RepositoryId(0)
-  changeset resolved as: ChangesetId(Blake2(6473a332b6f2c52543365108144f9b1cff6b4874bc3ade72a8268f50226f86f4))
-  RewrittenAs([(ChangesetId(Blake2(5cac851d3a164f682613d6901e17a03e18afe8576145d4f5ff9dd0a51a82437f)), CommitSyncConfigVersion("INITIAL_IMPORT_SYNC_CONFIG"))])
+  RewrittenAs([(ChangesetId(Blake2(6473a332b6f2c52543365108144f9b1cff6b4874bc3ade72a8268f50226f86f4)), CommitSyncConfigVersion("INITIAL_IMPORT_SYNC_CONFIG"))])
   
   Deriving all the enabled derived data types
-  success

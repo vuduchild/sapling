@@ -26,6 +26,7 @@ class HgImportRequest;
 class ObjectId;
 class ReloadableConfig;
 class StructuredLogger;
+class FaultInjector;
 template <typename T>
 class RefPtr;
 class ObjectFetchContext;
@@ -36,22 +37,30 @@ class HgDatapackStore {
   using Options = sapling::BackingStoreOptions;
   using ImportRequestsList = std::vector<std::shared_ptr<HgImportRequest>>;
 
+  /**
+   * FaultInjector must be valid for the lifetime of the HgDatapackStore.
+   * Currently, FaultInjector is one of the last things destructed when Eden
+   * shutsdown. Likely we should use shared pointers instead of raw pointers
+   * for FaultInjector though. TODO: T171327256.
+   */
   HgDatapackStore(
       AbsolutePathPiece repository,
       const Options& options,
       std::shared_ptr<ReloadableConfig> config,
       std::shared_ptr<StructuredLogger> logger,
+      FaultInjector* FOLLY_NONNULL faultInjector,
       std::string repoName)
       : store_{repository.view(), options},
         config_{std::move(config)},
         logger_{std::move(logger)},
+        faultInjector_{*faultInjector},
         repoName_{std::move(repoName)} {}
 
   std::optional<Hash20> getManifestNode(const ObjectId& commitId);
 
   void getTreeBatch(const ImportRequestsList& requests);
 
-  TreePtr getTree(
+  folly::Try<TreePtr> getTree(
       const RelativePath& path,
       const Hash20& manifestId,
       const ObjectId& edenTreeId,
@@ -79,20 +88,20 @@ class HgDatapackStore {
    *
    * Returns nullptr if not found.
    */
-  BlobPtr getBlob(const HgProxyHash& hgInfo, bool localOnly);
+  folly::Try<BlobPtr> getBlob(const HgProxyHash& hgInfo, bool localOnly);
 
   /**
    * Imports the blob identified by the given hash from the local store.
    * Returns nullptr if not found.
    */
-  BlobPtr getBlobLocal(const HgProxyHash& hgInfo) {
+  folly::Try<BlobPtr> getBlobLocal(const HgProxyHash& hgInfo) {
     return getBlob(hgInfo, /*localOnly=*/true);
   }
 
   /**
    * Reads blob metadata from hg cache.
    */
-  BlobMetadataPtr getLocalBlobMetadata(const HgProxyHash& id);
+  folly::Try<BlobMetadataPtr> getLocalBlobMetadata(const HgProxyHash& id);
 
   /**
    * Fetch multiple aux data at once.
@@ -146,6 +155,7 @@ class HgDatapackStore {
   sapling::SaplingNativeBackingStore store_;
   std::shared_ptr<ReloadableConfig> config_;
   std::shared_ptr<StructuredLogger> logger_;
+  FaultInjector& faultInjector_;
   std::string repoName_;
 
   mutable RequestMetricsScope::LockedRequestWatchList liveBatchedBlobWatches_;

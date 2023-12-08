@@ -328,9 +328,10 @@ function mononoke_x_repo_sync() {
   GLOG_minloglevel=5 "$MONONOKE_X_REPO_SYNC" \
     "${CACHE_ARGS[@]}" \
     "${COMMON_ARGS[@]}" \
+    --source-repo-id="$source_repo_id" \
+    --target-repo-id="$target_repo_id" \
     --mononoke-config-path "$TESTTMP/mononoke-config" \
-    --source-repo-id "$source_repo_id" \
-    --target-repo-id "$target_repo_id" \
+    --scuba-dataset "file://$TESTTMP/x_repo_sync_scuba_logs" \
     "$@"
 }
 
@@ -1140,7 +1141,7 @@ CONFIG
 else
   cat >> "repos/$reponame_urlencoded/server.toml" <<CONFIG
 [derived_data_config.available_configs.default]
-types=["blame", "changeset_info", "deleted_manifest", "fastlog", "filenodes", "fsnodes", "unodes", "hgchangesets", "skeleton_manifests", "bssm"]
+types=["blame", "changeset_info", "deleted_manifest", "fastlog", "filenodes", "fsnodes", "unodes", "hgchangesets", "skeleton_manifests", "bssm", "testmanifest", "testshardedmanifest"]
 CONFIG
 fi
 

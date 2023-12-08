@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
+use std::path::Path;
 
 use anyhow::anyhow;
 use anyhow::bail;
@@ -101,6 +102,18 @@ impl MergeState {
             other,
             labels,
             ..Default::default()
+        }
+    }
+
+    pub fn read(path: &Path) -> Result<Option<Self>> {
+        match fs_err::File::open(path) {
+            Ok(mut file) => Ok(Some(
+                Self::deserialize(&mut file).context("deserializing merge state")?,
+            )),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(err) => return Err(err).context("opening merge state"),
         }
     }
 
@@ -349,7 +362,20 @@ impl MergeState {
             write_record(w, *rt, &data[0], &data[1..])?;
         }
 
+        // Flush explicitly to propagate errors.
+        w.flush()?;
+
         Ok(())
+    }
+
+    pub fn is_unresolved(&self) -> bool {
+        self.files
+            .iter()
+            .any(|(_, info)| info.state.is_unresolved())
+            || self
+                .merge_driver
+                .as_ref()
+                .map_or(false, |(_, state)| *state != MergeDriverState::Success)
     }
 }
 
@@ -541,9 +567,17 @@ impl ConflictState {
             _ => bail!("unknown merge record state '{}'", name),
         })
     }
+
+    fn is_unresolved(&self) -> bool {
+        match self {
+            // DriverResolved means "will be resolved by driver", not "driver already resolved".
+            Self::Unresolved | Self::UnresolvedPath | Self::DriverResolved => true,
+            _ => false,
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MergeDriverState {
     Unmarked,
     Marked,
@@ -566,5 +600,33 @@ impl MergeDriverState {
             MergeDriverState::Marked => "m",
             MergeDriverState::Success => "s",
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_is_unresolved() -> Result<()> {
+        let mut ms = MergeState::default();
+        assert!(!ms.is_unresolved());
+
+        ms.insert("foo".to_string().try_into()?, vec!["u".to_string()])?;
+        assert!(ms.is_unresolved());
+
+        ms.set_state("foo".try_into()?, "pu".to_string())?;
+        assert!(ms.is_unresolved());
+
+        ms.set_state("foo".try_into()?, "d".to_string())?;
+        assert!(ms.is_unresolved());
+
+        ms.set_state("foo".try_into()?, "r".to_string())?;
+        assert!(!ms.is_unresolved());
+
+        ms.set_merge_driver(Some(("my driver".to_string(), MergeDriverState::Marked)));
+        assert!(ms.is_unresolved());
+
+        Ok(())
     }
 }

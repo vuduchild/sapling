@@ -9,6 +9,7 @@
 #![feature(round_char_boundary)]
 
 pub mod basename_suffix_skeleton_manifest;
+pub mod basename_suffix_skeleton_manifest_v3;
 pub mod blame_v2;
 pub mod blob;
 pub mod bonsai_changeset;
@@ -35,6 +36,8 @@ pub mod sharded_map_v2;
 pub mod skeleton_manifest;
 pub mod sql_types;
 pub mod svnrev;
+pub mod test_manifest;
+pub mod test_sharded_manifest;
 pub mod thrift_convert;
 pub mod trie_map;
 pub mod typed_hash;
@@ -91,6 +94,7 @@ pub use thrift_convert::ThriftConvert;
 pub use trie_map::TrieMap;
 pub use typed_hash::BasenameSuffixSkeletonManifestId;
 pub use typed_hash::BlobstoreKey;
+pub use typed_hash::BssmV3DirectoryId;
 pub use typed_hash::ChangesetId;
 pub use typed_hash::ChangesetIdPrefix;
 pub use typed_hash::ChangesetIdsResolvedFromPrefix;
@@ -105,6 +109,8 @@ pub use typed_hash::ManifestUnodeId;
 pub use typed_hash::MononokeId;
 pub use typed_hash::RawBundle2Id;
 pub use typed_hash::SkeletonManifestId;
+pub use typed_hash::TestManifestId;
+pub use typed_hash::TestShardedManifestId;
 
 mod macros;
 

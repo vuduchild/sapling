@@ -1729,7 +1729,7 @@ def _docommit(ui, repo, *pats, **opts):
         # commit(), 1 if nothing changed or None on success.
         return 1 if ret == 0 else ret
 
-    cmdutil.checkunfinished(repo, commit=True)
+    cmdutil.checkunfinished(repo, op="commit")
 
     branch = repo[None].branch()
 
@@ -1819,6 +1819,12 @@ def _docommit(ui, repo, *pats, **opts):
             False,
             _("edit system config, opening in editor if no args given (DEPRECATED)"),
         ),
+        (
+            "d",
+            "delete",
+            False,
+            _("delete specified config items"),
+        ),
     ]
     + formatteropts,
     optionalrepo=True,
@@ -1829,6 +1835,9 @@ def config(ui, repo, *values, **opts):
     if any(opts.get(flag) for flag in {"edit", "user", "local", "system", "global"}):
         editconfig(ui, repo, *values, **opts)
         return
+
+    if opts.get("delete"):
+        raise error.Abort(_("--delete requires one of --user, --local or --system"))
 
     ui.pager("config")
     fm = ui.formatter("config", opts)
@@ -1921,35 +1930,59 @@ def editconfig(ui, repo, *values, **opts):
         return
 
     section_name = value = None
+    invalid_arg = None
     to_edit = []
+    is_delete = opts.get("delete")
 
     for arg in values:
         if section_name is None:
             if "=" in arg:
+                if is_delete:
+                    invalid_arg = arg
+                    break
+
                 section_name, value = arg.split("=", 1)
             else:
                 section_name = arg
         else:
             value = arg
-        if value is None:
+
+        # For whitespace separated pairs like "sl config --local foo.bar baz",
+        # we skip to the next iteration to get config value "baz".
+        if value is None and not is_delete:
             continue
+
         try:
             section, name = section_name.split(".", 1)
         except ValueError:
             # ex. not enough values to unpack
-            raise error.Abort(
-                _("invalid argument: %r") % section_name,
-                hint=("try section.name=value"),
-            )
+            break
+
         to_edit.append((section, name, value))
         section_name = value = None
 
-    if section_name is not None:
-        raise error.Abort(
-            _("missing config value for %r") % section_name,
-        )
+    if invalid_arg is None:
+        # If we are left with a live section_name, user failed to specify final
+        # (whitespace separated) value.
+        invalid_arg = section_name
+
+    if invalid_arg is not None:
+        if is_delete:
+            raise error.Abort(
+                _("invalid config deletion: %r") % invalid_arg,
+                hint=("try section.name"),
+            )
+        else:
+            raise error.Abort(
+                _("invalid config edit: %r") % invalid_arg,
+                hint=("try section.name=value"),
+            )
 
     for section, name, value in to_edit:
+        if value is None:
+            ui.note(_("deleting %s.%s from %s\n") % (section, name, targetpath))
+        else:
+            ui.note(_("setting %s.%s=%s in %s\n") % (section, name, value, targetpath))
         rcutil.editconfig(ui, targetpath, section, name, value)
 
     ui.status(_("updated config in %s\n") % targetpath)
@@ -2354,7 +2387,10 @@ def files(ui, repo, *pats, **opts):
     fmt = "%s" + end
 
     m = scmutil.match(ctx, pats, opts)
-    if isinstance(ctx, context.workingctx) and hasattr(repo, "sparsematch"):
+    shouldsparsematch = hasattr(repo, "sparsematch") and (
+        "eden" not in repo.requirements or "edensparse" in repo.requirements
+    )
+    if isinstance(ctx, context.workingctx) and shouldsparsematch:
         m = matchmod.intersectmatchers(m, repo.sparsematch())
 
     ui.pager("files")
@@ -2535,6 +2571,7 @@ def _dograft(ui, repo, *revs, **opts):
         if opts.get("continue"):
             cont = True
         if opts.get("abort"):
+            repo.localvfs.tryunlink("graftstate")
             return update(ui, repo, node=".", clean=True)
     else:
         cmdutil.checkunfinished(repo)
@@ -6372,6 +6409,9 @@ def update(
                 repo.ui.warn(_("continuing checkout to '%s'\n") % rev)
             else:
                 raise error.Abort(_("not in an interrupted update state"))
+    else:
+        # proactively clean this up if we aren't continuing
+        repo.localvfs.tryunlink("updatestate")
 
     if rev is not None and rev != "" and node is not None:
         raise error.Abort(_("please specify just one revision"))
@@ -6422,11 +6462,17 @@ def update(
         updatecheck = "none"
 
     with repo.wlock():
-        if not clean:
-            # Don't delete the "updatemergestate" marker if we have conflicts.
+        # Don't delete the "updatemergestate" marker if we have conflicts.
+        if clean:
+            repo.localvfs.tryunlink("updatemergestate")
+        else:
             abort_on_unresolved_conflicts()
 
-        cmdutil.clearunfinished(repo)
+        # Either we consumed this with "--continue" or we ignoring it with a
+        # different destination.
+        repo.localvfs.tryunlink("updatestate")
+
+        cmdutil.checkunfinished(repo, op="goto_clean" if clean else None)
 
         if date:
             rev = hex(cmdutil.finddate(ui, repo, date))

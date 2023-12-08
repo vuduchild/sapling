@@ -23,13 +23,18 @@ export const [ISLCommandContext, useCommand, dispatchCommand, allCommands] = mak
   Escape: [Modifier.NONE, KeyCode.Escape],
   SelectUpwards: [Modifier.NONE, KeyCode.UpArrow],
   SelectDownwards: [Modifier.NONE, KeyCode.DownArrow],
+  OpenDetails: [Modifier.NONE, KeyCode.RightArrow],
   ContinueSelectionUpwards: [Modifier.SHIFT, KeyCode.UpArrow],
   ContinueSelectionDownwards: [Modifier.SHIFT, KeyCode.DownArrow],
+  SelectAllCommits: [Modifier.ALT, KeyCode.A],
   HideSelectedCommits: [Modifier.NONE, KeyCode.Backspace],
+  ZoomIn: [Modifier.ALT, KeyCode.Plus],
+  ZoomOut: [Modifier.ALT, KeyCode.Minus],
   ToggleTheme: [Modifier.ALT, KeyCode.T],
   ToggleShelvedChangesDropdown: [Modifier.ALT, KeyCode.S],
   ToggleDownloadCommitsDropdown: [Modifier.ALT, KeyCode.D],
   ToggleCwdDropdown: [Modifier.ALT, KeyCode.C],
+  ToggleBulkActionsDropdown: [Modifier.ALT, KeyCode.B],
 });
 
 export type ISLCommandName = Parameters<typeof useCommand>[0];
@@ -49,10 +54,14 @@ export const ISLShortcutLabels: Partial<Record<ISLCommandName, string>> = {
   ToggleSidebar: t('Toggle Commit Info Sidebar'),
   OpenUncommittedChangesComparisonView: t('Open Uncommitted Changes Comparison View'),
   OpenHeadChangesComparisonView: t('Open Head Changes Comparison View'),
+  SelectAllCommits: t('Select All Commits'),
   ToggleTheme: t('Toggle Light/Dark Theme'),
+  ZoomIn: t('Zoom In'),
+  ZoomOut: t('Zoom Out'),
   ToggleShelvedChangesDropdown: t('Toggle Shelved Changes Dropdown'),
   ToggleDownloadCommitsDropdown: t('Toggle Download Commits Dropdown'),
   ToggleCwdDropdown: t('Toggle CWD Dropdown'),
+  ToggleBulkActionsDropdown: t('Toggle Bulk Actions Dropdown'),
 };
 
 export function useShowKeyboardShortcutsHelp(): () => unknown {

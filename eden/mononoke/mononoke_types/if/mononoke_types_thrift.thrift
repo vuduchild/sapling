@@ -20,7 +20,9 @@ namespace py3 eden.mononoke.mononoke_types
 typedef binary Blake2 (rust.newtype, rust.type = "smallvec::SmallVec<[u8; 32]>")
 
 // NB don't call the type bytes as py3 bindings don't like it
-typedef binary (rust.type = "bytes::Bytes") binary_bytes
+// NB (SF, 23-12-04) It can't be called bytes::Bytes because that is the syntax
+// of a nonstandard type which this isn't.
+typedef binary (rust.type = "Bytes") binary_bytes
 typedef binary small_binary (
   rust.newtype,
   rust.type = "smallvec::SmallVec<[u8; 24]>",
@@ -45,6 +47,9 @@ typedef IdType FsnodeId (rust.newtype)
 typedef IdType SkeletonManifestId (rust.newtype)
 typedef IdType MPathHash (rust.newtype)
 typedef IdType BasenameSuffixSkeletonManifestId (rust.newtype)
+typedef IdType BssmV3DirectoryId (rust.newtype)
+typedef IdType TestManifestId (rust.newtype)
+typedef IdType TestShardedManifestId (rust.newtype)
 
 typedef IdType ContentMetadataV2Id (rust.newtype)
 typedef IdType FastlogBatchId (rust.newtype)
@@ -488,6 +493,64 @@ union BssmEntry {
 struct BasenameSuffixSkeletonManifest {
   // Map of MPathElement -> BssmEntry
   1: ShardedMapNode subentries;
+} (rust.exhaustive)
+
+// BssmV3 is an optimized version of Bssm that differs from it in two ways:
+//
+// 1) It uses ShardedMapV2 instead of ShardedMap which avoids creating un-cachable blobs,
+// instead dividing the manifest into closely sized blobs.
+//
+// 2) Stores the sharded map inlined without a layer of indirection, and relies only
+// on the sharded map to decide which parts of the manifest should be inlined and
+// which should be stored in a separate blob. This avoids the large number of tiny
+// blobs that Bssm creates due to how unique basenames tend to be.
+struct BssmV3File {} (rust.exhaustive)
+struct BssmV3Directory {
+  1: ShardedMapV2Node subentries;
+} (rust.exhaustive)
+
+union BssmV3Entry {
+  1: BssmV3File file;
+  2: BssmV3Directory directory;
+} (rust.exhaustive)
+
+// TestManifest is a manifest type intended only to be used in tests. It contains
+// only the file names and the maximum basename length of all files in each directory.
+struct TestManifestFile {} (rust.exhaustive)
+struct TestManifestDirectory {
+  1: TestManifestId id;
+  2: i64 max_basename_length;
+} (rust.exhaustive)
+
+union TestManifestEntry {
+  1: TestManifestFile file;
+  2: TestManifestDirectory directory;
+} (rust.exhaustive)
+
+struct TestManifest {
+  1: map<MPathElement, TestManifestEntry> (
+    rust.type = "sorted_vector_map::SortedVectorMap",
+  ) subentries;
+} (rust.exhaustive)
+
+// TestShardedManifest is a sharded version of TestManifest (uses ShardedMapV2 in place of SortedVectorMap).
+struct TestShardedManifestFile {
+  // Storing the basename length of the file instead of calculating it from the edges from its parent
+  // simplifies the derivation logic.
+  1: i64 basename_length;
+} (rust.exhaustive)
+struct TestShardedManifestDirectory {
+  1: TestShardedManifestId id;
+  2: i64 max_basename_length;
+} (rust.exhaustive)
+
+union TestShardedManifestEntry {
+  1: TestShardedManifestFile file;
+  2: TestShardedManifestDirectory directory;
+} (rust.exhaustive)
+
+struct TestShardedManifest {
+  1: ShardedMapV2Node subentries;
 } (rust.exhaustive)
 
 struct FsnodeFile {

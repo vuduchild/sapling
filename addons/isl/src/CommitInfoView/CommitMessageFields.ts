@@ -96,6 +96,7 @@ function isFieldNonEmpty(field: string | Array<string>) {
 export function commitMessageFieldsToString(
   schema: Array<FieldConfig>,
   fields: CommitMessageFields,
+  allowEmptyTitle?: boolean,
 ): string {
   return schema
     .filter(config => config.key === 'Title' || isFieldNonEmpty(fields[config.key]))
@@ -106,7 +107,7 @@ export function commitMessageFieldsToString(
 
       if (config.key === 'Title') {
         const value = fields[config.key] as string;
-        if (value.trim().length === 0) {
+        if (allowEmptyTitle !== true && value.trim().length === 0) {
           return t('Temporary Commit');
         }
       }
@@ -150,6 +151,35 @@ export function mergeCommitMessageFields(
           const merged =
             av.trim() === bv.trim() ? av : av + (config.type === 'title' ? ', ' : '\n') + bv;
           return [config.key, merged];
+        }
+      })
+      .filter(notEmpty),
+  );
+}
+
+export function mergeManyCommitMessageFields(
+  schema: Array<FieldConfig>,
+  fields: Array<CommitMessageFields>,
+): CommitMessageFields {
+  return Object.fromEntries(
+    schema
+      .map(config => {
+        if (Array.isArray(fields[0][config.key])) {
+          return [
+            config.key,
+            [...new Set(fields.flatMap(field => field[config.key]))].slice(
+              0,
+              (config.type === 'field' ? config.maxTokens : undefined) ?? Infinity,
+            ),
+          ];
+        } else {
+          const result = fields
+            .map(field => field[config.key])
+            .filter(value => ((value as string | undefined)?.trim().length ?? 0) > 0);
+          if (result.length === 0) {
+            return undefined;
+          }
+          return [config.key, result.join(config.type === 'title' ? ', ' : '\n')];
         }
       })
       .filter(notEmpty),

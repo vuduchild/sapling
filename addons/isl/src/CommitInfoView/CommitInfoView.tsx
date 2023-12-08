@@ -9,7 +9,7 @@ import type {CommitInfo, DiffId} from '../types';
 import type {CommitInfoMode, EditedMessageUnlessOptimistic} from './CommitInfoState';
 import type {CommitMessageFields, FieldConfig, FieldsBeingEdited} from './types';
 
-import {Banner} from '../Banner';
+import {Banner, BannerKind} from '../Banner';
 import {ChangedFilesWithFetching} from '../ChangedFilesWithFetching';
 import serverAPI from '../ClientToServerAPI';
 import {Commit} from '../Commit';
@@ -21,6 +21,7 @@ import {OperationDisabledButton} from '../OperationDisabledButton';
 import {SubmitUpdateMessageInput} from '../SubmitUpdateMessageInput';
 import {Subtle} from '../Subtle';
 import {latestSuccessorUnlessExplicitlyObsolete} from '../SuccessionTracker';
+import {SuggestedRebaseButton} from '../SuggestedRebase';
 import {Tooltip} from '../Tooltip';
 import {UncommittedChanges} from '../UncommittedChanges';
 import {tracker} from '../analytics';
@@ -30,11 +31,13 @@ import {
   latestCommitMessageFields,
 } from '../codeReview/CodeReviewInfo';
 import {submitAsDraft, SubmitAsDraftCheckbox} from '../codeReview/DraftCheckbox';
+import {FoldButton, useRunFoldPreview} from '../fold';
 import {t, T} from '../i18n';
 import {messageSyncingEnabledState, updateRemoteMessage} from '../messageSyncing';
 import {AmendMessageOperation} from '../operations/AmendMessageOperation';
 import {getAmendOperation} from '../operations/AmendOperation';
 import {getCommitOperation} from '../operations/CommitOperation';
+import {FOLD_COMMIT_PREVIEW_HASH_PREFIX} from '../operations/FoldOperation';
 import {GhStackSubmitOperation} from '../operations/GhStackSubmitOperation';
 import {PrSubmitOperation} from '../operations/PrSubmitOperation';
 import {SetConfigOperation} from '../operations/SetConfigOperation';
@@ -65,7 +68,6 @@ import {
   findEditedDiffNumber,
   applyEditedFields,
   editedMessageSubset,
-  anyEditsMade,
   removeNoopEdits,
 } from './CommitMessageFields';
 import {CommitTitleByline, getTopmostEditedField, Section, SmallCapsTitle} from './utils';
@@ -140,9 +142,17 @@ export function MultiCommitInfo({selectedCommits}: {selectedCommits: Array<Commi
         ))}
       </div>
       <div className="commit-info-actions-bar">
+        <div className="commit-info-actions-bar-row">
+          <SuggestedRebaseButton
+            sources={selectedCommits.map(commit => succeedableRevset(commit.hash))}
+          />
+        </div>
         {commitsWithDiffs.length === 0 ? null : (
           <SubmitUpdateMessageInput commits={selectedCommits} />
         )}
+        <div className="commit-info-actions-bar-row">
+          <FoldButton />
+        </div>
         <div className="commit-info-actions-bar-left">
           <SubmitAsDraftCheckbox commitsToBeSubmit={selectedCommits} />
         </div>
@@ -199,7 +209,9 @@ export function CommitInfoDetails({commit}: {commit: CommitInfo}) {
   const uncommittedChanges = useRecoilValue(uncommittedChangesWithPreviews);
   const schema = useRecoilValue(commitMessageFieldsSchema);
 
-  const isOptimistic = useRecoilValue(commitByHash(commit.hash)) == null && !isCommitMode;
+  const isFoldPreview = commit.hash.startsWith(FOLD_COMMIT_PREVIEW_HASH_PREFIX);
+  const isOptimistic =
+    useRecoilValue(commitByHash(commit.hash)) == null && !isCommitMode && !isFoldPreview;
 
   const isPublic = mode === 'amend' && commit.phase === 'public';
 
@@ -318,6 +330,7 @@ export function CommitInfoDetails({commit}: {commit: CommitInfo}) {
                   mode !== 'commit' && field.key === 'Title' ? (
                     <>
                       <CommitTitleByline commit={commit} />
+                      {isFoldPreview && <FoldPreviewBanner />}
                       <ShowingRemoteMessageBanner
                         commit={commit}
                         latestFields={parsedFields}
@@ -375,14 +388,18 @@ export function CommitInfoDetails({commit}: {commit: CommitInfo}) {
       </div>
       {!isPublic && (
         <div className="commit-info-view-toolbar-bottom">
-          <ActionsBar
-            commit={commit}
-            latestMessage={parsedFields}
-            editedMessage={editedMessage}
-            fieldsBeingEdited={fieldsBeingEdited}
-            isCommitMode={isCommitMode}
-            setMode={setMode}
-          />
+          {isFoldPreview ? (
+            <FoldPreviewActions />
+          ) : (
+            <ActionsBar
+              commit={commit}
+              latestMessage={parsedFields}
+              editedMessage={editedMessage}
+              fieldsBeingEdited={fieldsBeingEdited}
+              isCommitMode={isCommitMode}
+              setMode={setMode}
+            />
+          )}
         </div>
       )}
     </div>
@@ -406,6 +423,20 @@ function areTextFieldsUnchanged(
     }
   }
   return true;
+}
+
+function FoldPreviewBanner() {
+  return (
+    <Banner
+      kind={BannerKind.green}
+      icon={<Icon icon="info" />}
+      tooltip={t(
+        'This is the commit message after combining these commits with the fold command. ' +
+          'You can edit this message before confirming and running fold.',
+      )}>
+      <T>Previewing result of combined commits</T>
+    </Banner>
+  );
 }
 
 function ShowingRemoteMessageBanner({
@@ -484,6 +515,22 @@ function ShowingRemoteMessageBanner({
         <T replace={{$provider: provider.label}}>Showing latest commit message from $provider</T>
       </Banner>
     </>
+  );
+}
+
+function FoldPreviewActions() {
+  const [cancel, run] = useRunFoldPreview();
+  return (
+    <div className="commit-info-actions-bar" data-testid="commit-info-actions-bar">
+      <div className="commit-info-actions-bar-right">
+        <VSCodeButton appearance="secondary" onClick={cancel}>
+          <T>Cancel</T>
+        </VSCodeButton>
+        <VSCodeButton appearance="primary" onClick={run}>
+          <T>Run Combine</T>
+        </VSCodeButton>
+      </div>
+    </div>
   );
 }
 

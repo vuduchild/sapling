@@ -42,7 +42,6 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 use thrift_types::edenfs::errors::eden_service::PrefetchFilesError;
-use thrift_types::edenfs::types::Glob;
 use thrift_types::edenfs::types::GlobParams;
 use thrift_types::edenfs::types::MountInfo;
 use thrift_types::edenfs::types::MountState;
@@ -71,7 +70,7 @@ const SNAPSHOT_MAGIC_4: &[u8] = b"eden\x00\x00\x00\x04";
 // List of supported repository types. This should stay in sync with the list
 // in the Python CLI at fs/cli_rs/edenfs-client/src/checkout.rs and the list in
 // the Daemon's CheckoutConfig at fs/config/CheckoutConfig.h.
-const SUPPORTED_REPOS: &[&str] = &["git", "hg", "recas"];
+const SUPPORTED_REPOS: &[&str] = &["git", "hg", "recas", "filteredhg"];
 const SUPPORTED_MOUNT_PROTOCOLS: &[&str] = &["fuse", "nfs", "prjfs"];
 const SUPPORTED_INODE_CATALOG_TYPES: &[&str] = &["legacy", "sqlite", "inmemory", "lmdb"];
 

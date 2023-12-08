@@ -255,13 +255,14 @@
   # To mark files as resolved:  hg resolve --mark FILE
   
   # To continue:                hg graft --continue
-  # To abort:                   hg goto --clean .    (warning: this will discard uncommitted changes)
+  # To abort:                   hg graft --abort
 
 # Commit while interrupted should fail:
 
   $ hg ci -m 'commit interrupted graft'
   abort: graft in progress
-  (use 'hg graft --continue' or 'hg graft --abort' to abort)
+  (use 'hg graft --continue' to continue or
+       'hg graft --abort' to abort)
   [255]
 
 # Abort the graft and try committing:

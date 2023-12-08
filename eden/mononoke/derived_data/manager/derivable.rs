@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 
+use anyhow::anyhow;
 use anyhow::Result;
 use async_trait::async_trait;
 use context::CoreContext;
@@ -37,6 +38,7 @@ use crate::context::DerivationContext;
 pub enum DerivableType {
     BlameV2,
     Bssm,
+    BssmV3,
     ChangesetInfo,
     DeletedManifests,
     Fastlog,
@@ -47,6 +49,8 @@ pub enum DerivableType {
     GitCommit,
     GitDeltaManifest,
     SkeletonManifests,
+    TestManifest,
+    TestShardedManifest,
     Unodes,
 }
 
@@ -55,6 +59,7 @@ impl DerivableType {
         match self {
             DerivableType::BlameV2 => "blame",
             DerivableType::Bssm => "bssm",
+            DerivableType::BssmV3 => "bssm_v3",
             DerivableType::ChangesetInfo => "changeset_info",
             DerivableType::DeletedManifests => "deleted_manifest",
             DerivableType::Fastlog => "fastlog",
@@ -65,6 +70,8 @@ impl DerivableType {
             DerivableType::GitCommit => "git_commits",
             DerivableType::GitDeltaManifest => "git_delta_manifests",
             DerivableType::SkeletonManifests => "skeleton_manifests",
+            DerivableType::TestManifest => "testmanifest",
+            DerivableType::TestShardedManifest => "testshardedmanifest",
             DerivableType::Unodes => "unodes",
         }
     }
@@ -149,6 +156,24 @@ pub trait BonsaiDerivable: Sized + Send + Sync + Clone + Debug + 'static {
             res.insert(csid, derived);
         }
         Ok(res)
+    }
+
+    /// Derive data for a changeset using other derived data types without
+    /// requiring data to be derived for the parents of the changeset.
+    ///
+    /// Can be used to parallelize backfilling derived data by slicing the commits
+    /// of a repository, deriving data for the boundaries of the slices using
+    /// this method, and then deriving data for the rest of the commits for all
+    /// slices in parallel using the normal derivation path.
+    async fn derive_from_predecessor(
+        _ctx: &CoreContext,
+        _derivation_ctx: &DerivationContext,
+        _bonsai: BonsaiChangeset,
+    ) -> Result<Self> {
+        Err(anyhow!(
+            "derive_from_predecessor is not implemented for {}",
+            Self::NAME
+        ))
     }
 
     /// Store this derived data as the mapped value for a given changeset.

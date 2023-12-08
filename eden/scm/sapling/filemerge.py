@@ -606,7 +606,7 @@ def _premerge(repo, fcd, fco, fca, toolconf, files, labels):
             mode = "merge3"
 
         r = simplemerge.simplemerge(
-            ui, fcd, fca, fco, quiet=True, label=labels, mode=mode
+            ui, fcd, fca, fco, quiet=True, label=labels, mode=mode, premerge=True
         )
         if not r:
             ui.debug(" premerge successful\n")
@@ -966,7 +966,7 @@ def partextras(labels):
 
     Intended use is in strings of the form "(l)ocal%(l)s".
     """
-    if labels is None:
+    if not labels:
         return {"l": "", "o": ""}
 
     return {"l": " [%s]" % labels[0], "o": " [%s]" % labels[1]}

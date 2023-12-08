@@ -3,6 +3,7 @@
   $ configure modern
   $ enable rebase
   $ setconfig automerge.merge-algos=adjacent-changes,subset-changes
+  $ setconfig automerge.disable-for-noninteractive=False
 
 Successful adjacent-changes merge:
 
@@ -13,7 +14,10 @@ Successful adjacent-changes merge:
   > |/  # B/A=a\nb'\nc\nd\ne\n
   > A   # A/A=a\nb\nc\nd\ne\n
   > EOS
-  $ hg rebase -r $C -d $B -q
+  $ hg rebase -r $C -d $B
+  rebasing 929db2f4565d "C"
+  merging A
+   lines 2-4 have been resolved by automerge algorithms
   $ hg cat -r tip A
   a
   b'
@@ -30,7 +34,9 @@ adjacent-changes merge - prompt:
   > |/  # B/A=a\nb'\nc\nd\ne\n
   > A   # A/A=a\nb\nc\nd\ne\n
   > EOS
-  $ hg rebase -r $C -d $B -q
+  $ hg rebase -r $C -d $B
+  rebasing 929db2f4565d "C"
+  merging A
   <<<<<<< dest:   6d1bb9f58190 - test: B
   -b
   +b'
@@ -44,7 +50,7 @@ adjacent-changes merge - prompt:
   +d'
   >>>>>>> source: 929db2f4565d - test: C
   
-  Above conflict can be resolved automatically (run 'hg help automerge' for more information):
+  Above conflict can be resolved automatically (see 'hg help automerge' for details):
   <<<<<<< automerge algorithm yields:
    b'
    c'
@@ -77,7 +83,9 @@ adjacent-changes merge - keep-in-file:
   > |/  # B/A=a\nb'\nc\nd\ne\n
   > A   # A/A=a\nb\nc\nd\ne\n
   > EOS
-  $ hg rebase -r $C -d $B -q
+  $ hg rebase -r $C -d $B
+  rebasing 929db2f4565d "C"
+  merging A
   warning: 1 conflicts while merging A! (edit, then use 'hg resolve --mark')
   unresolved conflicts (see hg resolve, then hg rebase --continue)
   [1]
@@ -98,6 +106,20 @@ adjacent-changes merge - keep-in-file:
   d'
   >>>>>>>
   e
+
+adjacent-changes merge - disable for noninteractive:
+
+  $ newrepo
+  $ setconfig automerge.mode=accept automerge.disable-for-noninteractive=True
+  $ drawdag <<'EOS'
+  > B C # C/A=a\nb\nc'\nd'\ne\n
+  > |/  # B/A=a\nb'\nc\nd\ne\n
+  > A   # A/A=a\nb\nc\nd\ne\n
+  > EOS
+  $ hg rebase -r $C -d $B -q
+  warning: 1 conflicts while merging A! (edit, then use 'hg resolve --mark')
+  unresolved conflicts (see hg resolve, then hg rebase --continue)
+  [1]
 
 Unsuccessful adjacent-changes merge - overlap:
 
@@ -133,7 +155,10 @@ Successful subset-changes merge:
   > |/  # B/A=a\nb\nc\nd\n
   > A   # A/A=a\nd\n
   > EOS
-  $ hg rebase -r $C -d $B -q
+  $ hg rebase -r $C -d $B
+  rebasing 58aa52a4f6bb "C"
+  merging A
+   lines 2-3 have been resolved by automerge algorithms
   $ hg cat -r tip A
   a
   b

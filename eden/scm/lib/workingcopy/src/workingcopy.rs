@@ -149,7 +149,7 @@ impl WorkingCopy {
         &self.dot_hg_path
     }
 
-    pub fn lock(&self) -> Result<repolock::RepoLockHandle, repolock::LockError> {
+    pub fn lock(&self) -> Result<repolock::LockedPath, repolock::LockError> {
         self.locker.lock_working_copy(self.dot_hg_path.clone())
     }
 
@@ -258,7 +258,12 @@ impl WorkingCopy {
                 {
                     let client = Arc::new(EdenFsClient::from_wdir(vfs.root())?);
                     (
-                        Box::new(EdenFileSystem::new(treestate, client.clone())?),
+                        Box::new(EdenFileSystem::new(
+                            treestate,
+                            client.clone(),
+                            vfs.clone(),
+                            store.clone(),
+                        )?),
                         Some(client),
                     )
                 }
@@ -475,6 +480,7 @@ impl WorkingCopy {
             matcher,
             StateFlags::COPIED,
             StateFlags::empty(),
+            StateFlags::empty(),
             |path, state| {
                 let copied_path = state
                     .copied
@@ -499,21 +505,21 @@ impl WorkingCopy {
     }
 
     pub fn read_merge_state(&self) -> Result<Option<MergeState>> {
-        let mut ms_file = match fs_err::File::open(self.dot_hg_path().join("merge/state2")) {
-            Ok(f) => f,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(None);
-            }
-            Err(err) => return Err(err).context("opening merge state"),
-        };
-        Ok(Some(
-            MergeState::deserialize(&mut ms_file).context("deserializing merge state")?,
-        ))
+        // Conceptually it seems like we want to ensure_locked() here, but in
+        // practice light weight operations such as status+morestatus read the
+        // merge state without a lock, so we can't require a lock. The merge
+        // state is written atomically so we won't see an incomplete merge
+        // state, but if we read other state files without locking then things
+        // can be inconsistent.
+
+        MergeState::read(&self.dot_hg_path().join("merge/state2"))
     }
 
     pub fn write_merge_state(&self, ms: &MergeState) -> Result<()> {
+        self.ensure_locked()?;
+
         let dir = self.dot_hg_path().join("merge");
-        util::path::create_shared_dir_all(&dir)?;
+        fs_err::create_dir_all(&dir)?;
         let mut f = util::file::atomic_open(&dir.join("state2"))?;
         ms.serialize(f.as_file())?;
         f.save()?;

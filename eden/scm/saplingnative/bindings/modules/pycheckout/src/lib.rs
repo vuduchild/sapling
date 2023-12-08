@@ -18,6 +18,7 @@ use checkout::CheckoutPlan;
 use checkout::Conflict;
 use checkout::Merge;
 use checkout::MergeResult;
+use configmodel::Config;
 use cpython::*;
 use cpython_ext::convert::ImplInto;
 use cpython_ext::ExtractInnerRef;
@@ -28,7 +29,6 @@ use manifest_tree::Diff;
 use manifest_tree::TreeManifest;
 use pathmatcher::Matcher;
 use progress_model::ProgressBar;
-use pyconfigloader::config;
 use pymanifest::treemanifest;
 use pypathmatcher::extract_matcher;
 use pypathmatcher::extract_option_matcher;
@@ -38,6 +38,9 @@ use storemodel::FileStore;
 use vfs::VFS;
 
 type ArcFileStore = Arc<dyn FileStore>;
+
+#[cfg(feature = "eden")]
+pub mod feature_eden;
 
 pub fn init_module(py: Python, package: &str) -> PyResult<PyModule> {
     let name = [package, "checkout"].join(".");
@@ -50,6 +53,8 @@ pub fn init_module(py: Python, package: &str) -> PyResult<PyModule> {
         "fixsymlinks",
         py_fn!(py, fix_symlinks(paths: Vec<String>, root: PyPathBuf)),
     )?;
+    #[cfg(feature = "eden")]
+    feature_eden::populate_module(py, &m)?;
     Ok(m)
 }
 
@@ -75,7 +80,7 @@ py_class!(class checkoutplan |py| {
 
     def __new__(
         _cls,
-        config: &config,
+        config: ImplInto<Arc<dyn Config + Send + Sync>>,
         root: PyPathBuf,
         current_manifest: &treemanifest,
         target_manifest: &treemanifest,
@@ -84,7 +89,7 @@ py_class!(class checkoutplan |py| {
         sparse_change: Option<(PyObject, PyObject)> = None,
         progress_path: Option<PyPathBuf> = None,
     ) -> PyResult<checkoutplan> {
-        let config = config.get_cfg(py);
+        let config = config.into();
         let matcher: Arc<dyn Matcher + Send + Sync> = extract_option_matcher(py, matcher)?;
 
         let current = current_manifest.get_underlying(py);

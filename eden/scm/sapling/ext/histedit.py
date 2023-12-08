@@ -1720,15 +1720,6 @@ def summaryhook(ui, repo):
 
 def extsetup(ui):
     cmdutil.summaryhooks.add("histedit", summaryhook)
-    cmdutil.unfinishedstates.append(
-        [
-            "histedit-state",
-            False,
-            True,
-            _("histedit in progress"),
-            _("use '@prog@ histedit --continue' or '@prog@ histedit --abort'"),
-        ]
-    )
     cmdutil.afterresolvedstates.append(
         ("histedit-state", _("@prog@ histedit --continue"))
     )

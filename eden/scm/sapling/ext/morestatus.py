@@ -15,6 +15,7 @@ import os
 from sapling import (
     commands,
     hbisect,
+    localrepo,
     merge as mergemod,
     node as nodeutil,
     pycompat,
@@ -109,8 +110,7 @@ def updatecleanmsg(dest=None):
 
 
 def graftmsg(repo, ui):
-    # tweakdefaults requires `update` to have a rev hence the `.`
-    helpmessage(ui, _("@prog@ graft --continue"), updatecleanmsg())
+    helpmessage(ui, _("@prog@ graft --continue"), _("@prog@ graft --abort"))
 
 
 def updatemsg(repo, ui):
@@ -220,21 +220,23 @@ STATES = (
 def extsetup(ui):
     if ui.configbool("morestatus", "show") and not ui.plain():
         wrapcommand(commands.table, "status", statuscmd)
+
+        localrepo.localrepository._wlockfreeprefix.add(UPDATEARGS)
+
         # Write down `hg update` args to show the continue command in
         # interrupted update state.
         ui.setconfig("hooks", "pre-update.morestatus", saveupdateargs)
         ui.setconfig("hooks", "post-update.morestatus", cleanupdateargs)
 
 
-def saveupdateargs(repo, args, **kwargs):
+def saveupdateargs(repo, args: str, **kwargs) -> None:
     # args is a string containing all flags and arguments
-    with repo.wlock():
-        repo.localvfs.writeutf8(UPDATEARGS, args)
+    with repo.localvfs(UPDATEARGS, "wb", atomictemp=True) as fp:
+        fp.write(args.encode("utf-8"))
 
 
-def cleanupdateargs(repo, **kwargs):
-    with repo.wlock():
-        repo.localvfs.tryunlink(UPDATEARGS)
+def cleanupdateargs(repo, **kwargs) -> None:
+    repo.localvfs.tryunlink(UPDATEARGS)
 
 
 def statuscmd(orig, ui, repo, *pats, **opts):

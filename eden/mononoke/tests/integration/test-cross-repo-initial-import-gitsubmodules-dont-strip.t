@@ -33,47 +33,30 @@ Create commit that modifies git submodule in small repo
   B=cd6bd41f62adb809024156682965586754610ac4687b2833317151c239a58b71
   C=ab5bf42dd164f61fa2bcb2de20224d8ffb60f12619bb3692f69d7c171dc1c3be
 
-  $ with_stripped_logs mononoke_x_repo_sync "$SMALL_REPO_ID"  "$LARGE_REPO_ID" initial-import --commit "$C" --version-name "$LATEST_CONFIG_VERSION_NAME" --new-bookmark "$NEW_BOOKMARK_NAME"
-  using repo "small_repo" repoid RepositoryId(1)
-  using repo "large_repo" repoid RepositoryId(0)
-  using repo "small_repo" repoid RepositoryId(1)
-  using repo "large_repo" repoid RepositoryId(0)
-  changeset resolved as: ChangesetId(Blake2(ab5bf42dd164f61fa2bcb2de20224d8ffb60f12619bb3692f69d7c171dc1c3be))
+  $ with_stripped_logs mononoke_x_repo_sync "$SMALL_REPO_ID"  "$LARGE_REPO_ID" initial-import -i "$C" --version-name "$LATEST_CONFIG_VERSION_NAME"
   Checking if ab5bf42dd164f61fa2bcb2de20224d8ffb60f12619bb3692f69d7c171dc1c3be is already synced 1->0
   syncing ab5bf42dd164f61fa2bcb2de20224d8ffb60f12619bb3692f69d7c171dc1c3be
-  Setting bookmark SYNCED_HEAD to changeset f299e57c379932297b130d60f6d86e54c87c8e02507bf0867783e23d7d8f8a50
   changeset ab5bf42dd164f61fa2bcb2de20224d8ffb60f12619bb3692f69d7c171dc1c3be synced as f299e57c379932297b130d60f6d86e54c87c8e02507bf0867783e23d7d8f8a50 in * (glob)
-  successful sync
+  successful sync of head ab5bf42dd164f61fa2bcb2de20224d8ffb60f12619bb3692f69d7c171dc1c3be
 
 # NOTE: this command is expected to fail because some types can't be derived 
 # for bonsais with git submodules.
-  $ clone_and_log_large_repo "$NEW_BOOKMARK_NAME" "$C"
-  streaming all changes
-  2 files to transfer, 0 bytes of data
-  transferred 0 bytes in 0.0 seconds (0 bytes/sec)
-  remote: Command failed
-  remote:   Error:
-  remote:     Git submodules not supported
-  remote: 
-  remote:   Root cause:
-  remote:     Git submodules not supported
-  remote: 
-  remote:   Debug context:
-  remote:     "Git submodules not supported"
-  abort: unexpected EOL, expected netstring digit
-  abort: '$TESTTMP/large_repo' is not inside a repository, but this command requires a repository!
-  (use 'cd' to go to a directory inside a repository and try again)
-  abort: '$TESTTMP/large_repo' is not inside a repository, but this command requires a repository!
-  (use 'cd' to go to a directory inside a repository and try again)
+  $ clone_and_log_large_repo "f299e57c379932297b130d60f6d86e54c87c8e02507bf0867783e23d7d8f8a50"
+  Error: Failed to derive Mercurial changeset
+  
+  Caused by:
+      Git submodules not supported
+  o  e462fc947f26 A
+      smallrepofolder1/bar/b.txt |  1 +
+      smallrepofolder1/foo/a.txt |  1 +
+      2 files changed, 2 insertions(+), 0 deletions(-)
+  
   
   
   Running mononoke_admin to verify mapping
   
-  using repo "small_repo" repoid RepositoryId(1)
-  using repo "large_repo" repoid RepositoryId(0)
-  changeset resolved as: ChangesetId(Blake2(ab5bf42dd164f61fa2bcb2de20224d8ffb60f12619bb3692f69d7c171dc1c3be))
-  RewrittenAs([(ChangesetId(Blake2(f299e57c379932297b130d60f6d86e54c87c8e02507bf0867783e23d7d8f8a50)), CommitSyncConfigVersion("INITIAL_IMPORT_SYNC_CONFIG"))])
+  RewrittenAs([(ChangesetId(Blake2(ab5bf42dd164f61fa2bcb2de20224d8ffb60f12619bb3692f69d7c171dc1c3be)), CommitSyncConfigVersion("INITIAL_IMPORT_SYNC_CONFIG"))])
   
   Deriving all the enabled derived data types
   Error: Git submodules not supported
-  failure
+  [1]

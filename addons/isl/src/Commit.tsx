@@ -26,10 +26,11 @@ import {codeReviewProvider, latestCommitMessage} from './codeReview/CodeReviewIn
 import {DiffInfo} from './codeReview/DiffBadge';
 import {SyncStatus, syncStatusAtom} from './codeReview/syncStatus';
 import {islDrawerState} from './drawerState';
-import {isDescendant} from './getCommitTree';
+import {FoldButton, useRunFoldPreview} from './fold';
 import {t, T} from './i18n';
 import {IconStack} from './icons/IconStack';
 import {getAmendToOperation, isAmendToAllowedForCommit} from './operationUtils';
+import {FoldOperation} from './operations/FoldOperation';
 import {GotoOperation} from './operations/GotoOperation';
 import {HideOperation} from './operations/HideOperation';
 import {RebaseOperation} from './operations/RebaseOperation';
@@ -41,7 +42,7 @@ import {selectedCommits, useCommitSelection} from './selection';
 import {
   inlineProgressByHash,
   isFetchingUncommittedChanges,
-  latestCommitTreeMap,
+  latestDag,
   latestUncommittedChanges,
   operationBeingPreviewed,
   useRunOperation,
@@ -96,6 +97,8 @@ function previewPreventsActions(preview?: CommitPreview): boolean {
     case CommitPreview.REBASE_ROOT:
     case CommitPreview.HIDDEN_ROOT:
     case CommitPreview.HIDDEN_DESCENDANT:
+    case CommitPreview.FOLD:
+    case CommitPreview.FOLD_PREVIEW:
     case CommitPreview.NON_ACTIONABLE_COMMIT:
       return true;
   }
@@ -266,13 +269,21 @@ export const Commit = memo(
           <ConfirmHideButton onClick={() => handlePreviewedOperation(/* cancel */ false)} />
         </React.Fragment>,
       );
+    } else if (previewType === CommitPreview.FOLD_PREVIEW) {
+      commitActions.push(<ConfirmCombineButtons key="fold" />);
     }
+
+    if (!isPublic && !actionsPrevented && isSelected) {
+      commitActions.push(<FoldButton key="fold-button" commit={commit} />);
+    }
+
     if (!actionsPrevented && !commit.isHead) {
       commitActions.push(
         <span className="goto-button" key="goto-button">
           <Tooltip title={t('Move the working copy to this commit')} delayMs={250}>
             <VSCodeButton
               appearance="secondary"
+              aria-label={t('Go to commit "$title"', {replace: {$title: commit.title}})}
               onClick={event => {
                 runOperation(
                   new GotoOperation(
@@ -294,6 +305,7 @@ export const Commit = memo(
         </span>,
       );
     }
+
     if (!isPublic && !actionsPrevented && commit.isHead) {
       commitActions.push(<UncommitButton key="uncommit" />);
     }
@@ -303,7 +315,11 @@ export const Commit = memo(
 
     if (!isPublic && !actionsPrevented) {
       commitActions.push(
-        <OpenCommitInfoButton key="open-sidebar" revealCommit={onDoubleClickToShowDrawer} />,
+        <OpenCommitInfoButton
+          key="open-sidebar"
+          revealCommit={onDoubleClickToShowDrawer}
+          commit={commit}
+        />,
       );
     }
 
@@ -382,7 +398,13 @@ export const Commit = memo(
   },
 );
 
-function OpenCommitInfoButton({revealCommit}: {revealCommit: () => unknown}) {
+function OpenCommitInfoButton({
+  commit,
+  revealCommit,
+}: {
+  commit: CommitInfo;
+  revealCommit: () => unknown;
+}) {
   return (
     <Tooltip title={t("Open commit's details in sidebar")} delayMs={250}>
       <VSCodeButton
@@ -393,6 +415,7 @@ function OpenCommitInfoButton({revealCommit}: {revealCommit: () => unknown}) {
           e.preventDefault();
         }}
         className="open-commit-info-button"
+        aria-label={t('Open commit "$title"', {replace: {$title: commit.title}})}
         data-testid="open-commit-info-button">
         <Icon icon="chevron-right" />
       </VSCodeButton>
@@ -406,6 +429,22 @@ function ConfirmHideButton({onClick}: {onClick: () => unknown}) {
     <VSCodeButton ref={ref} appearance="primary" onClick={onClick}>
       <T>Hide</T>
     </VSCodeButton>
+  );
+}
+
+function ConfirmCombineButtons() {
+  const ref = useAutofocusRef() as React.MutableRefObject<null>;
+  const [cancel, run] = useRunFoldPreview();
+
+  return (
+    <>
+      <VSCodeButton appearance="secondary" onClick={cancel}>
+        <T>Cancel</T>
+      </VSCodeButton>
+      <VSCodeButton ref={ref} appearance="primary" onClick={run}>
+        <T>Run Combine</T>
+      </VSCodeButton>
+    </>
   );
 }
 
@@ -517,6 +556,10 @@ export function YouAreHere({
 
 let commitBeingDragged: CommitInfo | undefined = undefined;
 
+// This is a global state outside React because commit DnD is a global
+// concept: there won't be 2 DnD happening at once in the same window.
+let lastDndId = 0;
+
 function preventDefault(e: Event) {
   e.preventDefault();
 }
@@ -551,37 +594,60 @@ function DraggableCommit({
   const handleDragEnter = useRecoilCallback(
     ({snapshot, set}) =>
       () => {
-        const loadable = snapshot.getLoadable(latestCommitTreeMap);
-        if (loadable.state !== 'hasValue') {
-          return;
-        }
-        const treeMap = loadable.contents;
+        // Capture the environment.
+        const currentBeingDragged = commitBeingDragged;
+        const currentDndId = ++lastDndId;
+        const release = snapshot.retain();
 
-        if (commitBeingDragged != null && commit.hash !== commitBeingDragged.hash) {
-          const draggedTree = treeMap.get(commitBeingDragged.hash);
-          if (draggedTree) {
-            if (
-              // can't rebase a commit onto its descendants
-              !isDescendant(commit.hash, draggedTree) &&
-              // can't rebase a commit onto its parent... it's already there!
-              !(commitBeingDragged.parents as Array<string>).includes(commit.hash)
-            ) {
-              // if the dest commit has a remote bookmark, use that instead of the hash.
-              // this is easier to understand in the command history and works better with optimistic state
-              const destination =
-                commit.remoteBookmarks.length > 0
-                  ? succeedableRevset(commit.remoteBookmarks[0])
-                  : latestSuccessorUnlessExplicitlyObsolete(commit);
-              set(
-                operationBeingPreviewed,
-                new RebaseOperation(
-                  latestSuccessorUnlessExplicitlyObsolete(commitBeingDragged),
-                  destination,
-                ),
-              );
+        const handleDnd = () => {
+          // Skip handling if there was a new "DragEnter" event that invalidates this one.
+          if (lastDndId != currentDndId) {
+            return;
+          }
+          const loadable = snapshot.getLoadable(latestDag);
+          if (loadable.state !== 'hasValue') {
+            return;
+          }
+          const dag = loadable.contents;
+
+          if (currentBeingDragged != null && commit.hash !== currentBeingDragged.hash) {
+            const beingDragged = currentBeingDragged;
+            if (dag.has(beingDragged.hash)) {
+              if (
+                // can't rebase a commit onto its descendants
+                !dag.isAncestor(beingDragged.hash, commit.hash) &&
+                // can't rebase a commit onto its parent... it's already there!
+                !(beingDragged.parents as Array<string>).includes(commit.hash)
+              ) {
+                // if the dest commit has a remote bookmark, use that instead of the hash.
+                // this is easier to understand in the command history and works better with optimistic state
+                const destination =
+                  commit.remoteBookmarks.length > 0
+                    ? succeedableRevset(commit.remoteBookmarks[0])
+                    : latestSuccessorUnlessExplicitlyObsolete(commit);
+                set(operationBeingPreviewed, op => {
+                  const newRebase = new RebaseOperation(
+                    latestSuccessorUnlessExplicitlyObsolete(beingDragged),
+                    destination,
+                  );
+                  const isEqual = newRebase.equals(op);
+                  return isEqual ? op : newRebase;
+                });
+              }
             }
           }
-        }
+        };
+
+        // This allows us to recieve a list of "queued" DragEnter events
+        // before actually handling them. This way we can skip "invalidated"
+        // events and only handle the last (valid) one.
+        window.setTimeout(() => {
+          try {
+            handleDnd();
+          } finally {
+            release();
+          }
+        }, 1);
       },
     [commit],
   );
@@ -628,7 +694,6 @@ function DraggableCommit({
         }
       }}
       onContextMenu={onContextMenu}
-      tabIndex={0}
       data-testid={'draggable-commit'}>
       <div className="commit-wide-drag-target" onDragEnter={handleDragEnter} />
       {dragDisabledMessage != null ? (

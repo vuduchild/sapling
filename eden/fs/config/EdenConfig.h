@@ -718,20 +718,10 @@ class EdenConfig : private ConfigSettingManager {
       this};
 
   /**
-   * Whether fetching trees should fall back on an external hg importer process.
+   * Whether fetching objects should fall back to hg importer process.
    */
-  ConfigSetting<bool> hgTreeFetchFallback{"hg:tree-fetch-fallback", true, this};
-
-  /**
-   * Whether fetching blobs should fall back on an external hg importer process.
-   */
-  ConfigSetting<bool> hgBlobFetchFallback{"hg:blob-fetch-fallback", true, this};
-
-  /**
-   * Whether fetching blob metadata should fall back to fetching blobs.
-   */
-  ConfigSetting<bool> hgBlobMetaFetchFallback{
-      "hg:blobmeta-fetch-fallback",
+  ConfigSetting<bool> hgImporterFetchFallback{
+      "hg:importer-fetch-fallback",
       true,
       this};
 
@@ -1278,6 +1268,23 @@ class EdenConfig : private ConfigSettingManager {
   ConfigSetting<bool> doctorEnableKerberosCheck{
       "doctor:enable-kerberos-check",
       false,
+      this};
+
+  /**
+   * The minimum kernel version required for EdenFS to work correctly.
+   */
+  ConfigSetting<std::string> doctorMinimumKernelVersion{
+      "doctor:minimum-kernel-version",
+      "4.11.3-67",
+      this};
+
+  /**
+   * Known bad kernel versions for which we should print a warning in `edenfsctl
+   * doctor`.
+   */
+  ConfigSetting<std::string> doctorKnownBadKernelVersions{
+      "doctor:known-bad-kernel-versions",
+      "TODO,TEST",
       this};
 
   // [hash]

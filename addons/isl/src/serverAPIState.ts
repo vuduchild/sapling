@@ -6,7 +6,6 @@
  */
 
 import type {MessageBusStatus} from './MessageBus';
-import type {CommitTree} from './getCommitTree';
 import type {Operation} from './operations/Operation';
 import type {
   ApplicationInfo,
@@ -26,8 +25,8 @@ import type {EnsureAssignedTogether} from 'shared/EnsureAssignedTogether';
 
 import serverAPI from './ClientToServerAPI';
 import messageBus from './MessageBus';
-import {successionTracker} from './SuccessionTracker';
-import {getCommitTree, walkTreePostorder} from './getCommitTree';
+import {latestSuccessorsMap, successionTracker} from './SuccessionTracker';
+import {Dag} from './dag/dag';
 import {persistAtomToConfigEffect} from './persistAtomToConfigEffect';
 import {clearOnCwdChange} from './recoilUtils';
 import {initialParams} from './urlParams';
@@ -230,6 +229,18 @@ export const latestCommits = selector<Array<CommitInfo>>({
   },
 });
 
+/** The dag also includes a mutationDag to answer successor queries. */
+export const latestDag = selector<Dag>({
+  key: 'latestDag',
+  get: ({get}) => {
+    const commits = get(latestCommits);
+    const successorMap = get(latestSuccessorsMap);
+    const commitDag = undefined; // will be populated from `commits`
+    const dag = Dag.fromDag(commitDag, successorMap).add(commits).forceConnectPublic();
+    return dag;
+  },
+});
+
 export const commitFetchError = selector<Error | undefined>({
   key: 'commitFetchError',
   get: ({get}) => {
@@ -373,20 +384,6 @@ export const commitsShownRange = atom<number | undefined>({
 });
 
 /**
- * Latest fetched commit tree from the server, without any previews.
- * Prefer using `treeWithPreviews.trees`, since it includes optimistic state
- * and previews.
- */
-export const latestCommitTree = selector<Array<CommitTree>>({
-  key: 'latestCommitTree',
-  get: ({get}) => {
-    const commits = get(latestCommits);
-    const tree = getCommitTree(commits);
-    return tree;
-  },
-});
-
-/**
  * Latest head commit from original data from the server, without any previews.
  * Prefer using `treeWithPreviews.headCommit`, since it includes optimistic state
  * and previews.
@@ -396,26 +393,6 @@ export const latestHeadCommit = selector<CommitInfo | undefined>({
   get: ({get}) => {
     const commits = get(latestCommits);
     return commits.find(commit => commit.isHead);
-  },
-});
-
-/**
- * Mapping of commit hash -> subtree at that commit
- * Latest mapping of commit hash -> subtree at that commit from original data
- * from the server, without any previews.
- * Prefer using `treeWithPreviews.treeMap`, since it includes
- * optimistic state and previews.
- */
-export const latestCommitTreeMap = selector<Map<Hash, CommitTree>>({
-  key: 'latestCommitTreeMap',
-  get: ({get}) => {
-    const trees = get(latestCommitTree);
-    const map = new Map();
-    for (const tree of walkTreePostorder(trees)) {
-      map.set(tree.info.hash, tree);
-    }
-
-    return map;
   },
 });
 
@@ -782,13 +759,14 @@ export function useAbortRunningOperation() {
 export function useRunPreviewedOperation() {
   return useRecoilCallback(
     ({snapshot, set}) =>
-      (isCancel: boolean) => {
+      (isCancel: boolean, operation?: Operation) => {
         if (isCancel) {
           set(operationBeingPreviewed, undefined);
           return;
         }
 
-        const operationToRun = snapshot.getLoadable(operationBeingPreviewed).valueMaybe();
+        const operationToRun =
+          operation ?? snapshot.getLoadable(operationBeingPreviewed).valueMaybe();
         set(operationBeingPreviewed, undefined);
         if (operationToRun) {
           runOperationImpl(snapshot, set, operationToRun);

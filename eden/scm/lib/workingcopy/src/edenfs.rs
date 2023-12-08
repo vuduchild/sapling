@@ -22,9 +22,11 @@ use manifest_tree::TreeManifest;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use pathmatcher::DynMatcher;
+use storemodel::FileStore;
 use treestate::treestate::TreeState;
 use types::hgid::NULL_ID;
 use types::HgId;
+use vfs::VFS;
 
 use crate::filesystem::FileSystem;
 use crate::filesystem::PendingChange;
@@ -32,17 +34,26 @@ use crate::filesystem::PendingChange;
 pub struct EdenFileSystem {
     treestate: Arc<Mutex<TreeState>>,
     client: Arc<EdenFsClient>,
+    vfs: VFS,
+    store: Arc<dyn FileStore>,
 
     // For wait_for_potential_change
     journal_position: Cell<(i64, i64)>,
 }
 
 impl EdenFileSystem {
-    pub fn new(treestate: Arc<Mutex<TreeState>>, client: Arc<EdenFsClient>) -> Result<Self> {
+    pub fn new(
+        treestate: Arc<Mutex<TreeState>>,
+        client: Arc<EdenFsClient>,
+        vfs: VFS,
+        store: Arc<dyn FileStore>,
+    ) -> Result<Self> {
         let journal_position = Cell::new(client.get_journal_position()?);
         Ok(EdenFileSystem {
             treestate,
             client,
+            vfs,
+            store,
             journal_position,
         })
     }
@@ -51,7 +62,7 @@ impl EdenFileSystem {
 impl FileSystem for EdenFileSystem {
     fn pending_changes(
         &self,
-        _matcher: DynMatcher,
+        matcher: DynMatcher,
         _ignore_matcher: DynMatcher,
         _ignore_dirs: Vec<PathBuf>,
         include_ignored: bool,
@@ -67,15 +78,34 @@ impl FileSystem for EdenFileSystem {
             .unwrap_or_else(|| Ok(NULL_ID))?;
 
         let status_map = self.client.get_status(p1, include_ignored)?;
-        Ok(Box::new(status_map.into_iter().map(|(path, status)| {
-            tracing::trace!(%path, ?status, "eden status");
+        Ok(Box::new(status_map.into_iter().filter_map(
+            move |(path, status)| {
+                tracing::trace!(%path, ?status, "eden status");
 
-            match status {
-                FileStatus::Removed => Ok(PendingChange::Deleted(path)),
-                FileStatus::Ignored => Ok(PendingChange::Ignored(path)),
-                _ => Ok(PendingChange::Changed(path)),
-            }
-        })))
+                // EdenFS reports files that are present in the overlay but filtered from the repo
+                // as untracked. We "drop" any files that are excluded by the current filter.
+                match matcher.matches_file(&path) {
+                    Ok(m) if m => {
+                        Some(match status {
+                            FileStatus::Removed => Ok(PendingChange::Deleted(path)),
+                            FileStatus::Ignored => Ok(PendingChange::Ignored(path)),
+                            _ => Ok(PendingChange::Changed(path)),
+                        })
+                    },
+                    Ok(_) => {
+                        None
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            "failed to determine if {} is ignored or not tracked by the active filter: {:?}",
+                            &path,
+                            e
+                        );
+                        Some(Err(e))
+                    }
+                }
+            },
+        )))
     }
 
     fn wait_for_potential_change(&self, config: &dyn Config) -> Result<()> {
@@ -102,10 +132,14 @@ impl FileSystem for EdenFileSystem {
     fn sparse_matcher(
         &self,
         manifests: &[Arc<RwLock<TreeManifest>>],
-        _dot_dir: &'static str,
+        dot_dir: &'static str,
     ) -> Result<Option<DynMatcher>> {
-        assert!(!manifests.is_empty());
-        Ok(None)
+        crate::sparse::sparse_matcher(
+            &self.vfs,
+            manifests,
+            self.store.clone(),
+            &self.vfs.root().join(dot_dir),
+        )
     }
 
     fn set_parents(

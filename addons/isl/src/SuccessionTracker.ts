@@ -5,11 +5,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import type {Dag} from './dag/dag';
 import type {CommitInfo, ExactRevset, SmartlogCommits, SucceedableRevset} from './types';
 
+import {MutationDag} from './dag/mutation_dag';
 import {exactRevset, succeedableRevset} from './types';
 import {atom, DefaultValue} from 'recoil';
-import {unwrap} from 'shared/utils';
 
 type Successions = Array<[oldHash: string, newHash: string]>;
 type SuccessionCallback = (successions: Successions) => unknown;
@@ -93,18 +94,15 @@ export class SuccessionTracker {
 
 export const successionTracker = new SuccessionTracker();
 
-export const latestSuccessorsMap = atom<Map<string, string>>({
+export const latestSuccessorsMap = atom<MutationDag>({
   key: 'latestSuccessorsMap',
-  default: new Map(),
+  default: new MutationDag(),
   effects: [
     ({setSelf}) => {
       return successionTracker.onSuccessions(successions => {
         setSelf(existing => {
-          const map = existing instanceof DefaultValue ? new Map() : new Map(existing);
-          for (const [oldHash, newHash] of successions) {
-            map.set(oldHash, newHash);
-          }
-          return map;
+          const dag = existing instanceof DefaultValue ? new MutationDag() : existing;
+          return dag.addMutations(successions);
         });
       });
     },
@@ -121,17 +119,12 @@ export const latestSuccessorsMap = atom<Map<string, string>>({
  *
  * Note: if an ExactRevset is passed, don't look up the successor.
  */
-export function latestSuccessor(
-  ctx: {successorMap: Map<string, string>},
-  oldRevset: SucceedableRevset | ExactRevset,
-): string {
+export function latestSuccessor(ctx: Dag, oldRevset: SucceedableRevset | ExactRevset): string {
   let hash = oldRevset.revset;
   if (oldRevset.type === 'exact-revset') {
     return hash;
   }
-  while (ctx.successorMap.has(hash)) {
-    hash = unwrap(ctx.successorMap.get(hash));
-  }
+  hash = ctx.followSuccessors(hash).toHashes().first() ?? hash;
   return hash;
 }
 

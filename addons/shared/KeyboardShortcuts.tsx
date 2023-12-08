@@ -32,6 +32,7 @@ export enum KeyCode {
   Four = 52,
   Five = 53,
   A = 65,
+  B = 66,
   C = 67,
   D = 68,
   N = 78,
@@ -47,6 +48,8 @@ export enum KeyCode {
   RightArrow = 39,
   DownArrow = 40,
   Backspace = 8,
+  Plus = 187,
+  Minus = 189,
 }
 
 type CommandDefinition = [Modifiers, KeyCode];

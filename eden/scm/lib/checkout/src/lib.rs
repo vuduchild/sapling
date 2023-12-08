@@ -65,6 +65,9 @@ mod actions;
 pub mod clone;
 #[allow(dead_code)]
 mod conflict;
+#[cfg(feature = "eden")]
+pub mod edenfs;
+pub mod errors;
 #[allow(dead_code)]
 mod merge;
 
@@ -832,6 +835,27 @@ fn truncate_u64(f: &str, path: &RepoPath, v: u64) -> i32 {
 }
 
 pub fn checkout(
+    io: &IO,
+    repo: &mut Repo,
+    wc: &mut WorkingCopy,
+    target_commit: HgId,
+) -> Result<Option<(usize, usize)>> {
+    #[cfg(feature = "eden")]
+    if repo.requirements.contains("eden") {
+        edenfs::edenfs_checkout(
+            io,
+            repo,
+            wc,
+            target_commit,
+            edenfs_client::CheckoutMode::Force,
+        )?;
+        return Ok(None);
+    }
+
+    Ok(Some(sparse_checkout(io, repo, wc, target_commit)?))
+}
+
+pub fn sparse_checkout(
     io: &IO,
     repo: &mut Repo,
     wc: &mut WorkingCopy,
